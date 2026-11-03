@@ -222,3 +222,117 @@ main:focus-visible {
         margin-bottom: 32px;
     }
 }
+
+/* Formulario y resultados de Risk Calculator. */
+.calculadora {
+    padding: 28px;
+}
+
+.campos, .resultados-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 20px;
+    margin: 24px 0;
+}
+
+label {
+    display: block;
+    color: var(--texto);
+}
+
+input, select, button {
+    max-width: 100%;
+    font: inherit;
+}
+
+input:not([type="checkbox"]), select {
+    display: block;
+    width: 100%;
+    min-width: 0;
+    margin-top: 8px;
+    padding: 10px 12px;
+    border: 1px solid var(--borde);
+    border-radius: 8px;
+    background: var(--fondo);
+    color: var(--texto);
+}
+
+.checkbox {
+    margin-bottom: 20px;
+}
+
+input[type="checkbox"] {
+    accent-color: var(--acento);
+}
+
+button {
+    padding: 10px 20px;
+    border: 0;
+    border-radius: 8px;
+    background: var(--acento);
+    color: var(--fondo);
+    font-weight: 700;
+    cursor: pointer;
+}
+
+button:disabled {
+    opacity: 0.6;
+    cursor: wait;
+}
+
+input:focus-visible, select:focus-visible, button:focus-visible {
+    outline: 3px solid var(--acento);
+    outline-offset: 4px;
+}
+
+.ayuda, dt {
+    color: var(--secundario);
+}
+
+#mensajes:not(:empty), #resultados {
+    margin-top: 24px;
+}
+
+.advertencia {
+    color: #fcd68a;
+}
+
+.resultados-grid > div {
+    min-width: 0;
+    padding: 16px;
+    border: 1px solid var(--borde);
+    border-radius: 10px;
+}
+
+dd {
+    margin: 8px 0 0;
+    color: var(--acento);
+    font-size: 1.35rem;
+    overflow-wrap: anywhere;
+}
+
+.resultados-grid > .resultado-principal {
+    grid-column: 1 / -1;
+    border-color: var(--acento);
+    background: var(--fondo);
+}
+
+.resultado-principal dd {
+    font-size: clamp(2.5rem, 8vw, 4rem);
+    font-weight: 700;
+    line-height: 1.2;
+}
+
+[hidden] {
+    display: none !important;
+}
+
+@media (max-width: 600px) {
+    .calculadora {
+        padding: 20px;
+    }
+
+    .campos, .resultados-grid {
+        grid-template-columns: minmax(0, 1fr);
+    }
+}

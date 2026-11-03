@@ -1,22 +1,51 @@
 {% extends "base.html" %}
-
 {% block titulo %}Risk Calculator{% endblock %}
-
 {% block contenido %}
 <header class="bienvenida">
     <p class="etiqueta">Tu espacio de trading</p>
     <h1>Risk Calculator</h1>
-    <p class="introduccion">Un espacio para planificar el riesgo antes de cada operación.</p>
+    <p class="introduccion">Estima el máximo de contratos según tu presupuesto de riesgo.</p>
 </header>
-
-<section class="dashboard" aria-labelledby="seccion-titulo">
-    <div class="dashboard-encabezado">
-        <h2 id="seccion-titulo">Tu planificación de riesgo</h2>
-        <span class="estado">En preparación</span>
-    </div>
-    <div class="estado-vacio">
-        <span class="indicador" aria-hidden="true"></span>
-        <p>En una próxima fase podrás estimar el tamaño de posición según el riesgo definido y los datos de la operación.</p>
-    </div>
+<section class="dashboard calculadora" aria-labelledby="form-titulo">
+    <h2 id="form-titulo">Planifica tu operación</h2>
+    <form id="risk-form" action="{{ url_for('calculate_risk_api') }}" method="post">
+        <div class="campos">
+            <label>Contrato
+                <select name="instrument" required>
+                    {% for symbol in contracts %}<option value="{{ symbol }}">{{ symbol }}</option>{% endfor %}
+                </select>
+            </label>
+            <label>Riesgo máximo (USD)
+                <input name="risk_budget" type="number" min="0.000001" max="1000000000" step="0.000001" required>
+            </label>
+            <label>Distancia del stop (puntos)
+                <input name="stop_points" type="number" min="0.25" max="1000000000" step="0.25" required>
+            </label>
+            <label>Comisión por contrato (USD, entrada + salida)
+                <input name="commission" type="number" min="0" max="1000000000" step="0.000001" required>
+            </label>
+        </div>
+        <label class="checkbox"><input name="include_slippage" type="checkbox"> Incluir slippage estimado</label>
+        <label id="slippage-field" hidden>Slippage total por contrato (ticks, entrada + salida)
+            <input name="slippage_ticks" type="number" min="0" max="1000000000" step="1" disabled>
+        </label>
+        <p class="ayuda">Comisión y slippage representan el total de la operación por contrato; no se duplican. El stop debe ser múltiplo de 0.25 puntos.</p>
+        <button type="submit">Calcular contratos</button>
+    </form>
+    <noscript><p>Activa JavaScript para utilizar esta calculadora.</p></noscript>
+    <div id="mensajes" role="status" aria-live="polite"></div>
+    <section id="resultados" aria-labelledby="resultados-titulo" hidden>
+        <h2 id="resultados-titulo">Resultado estimado</h2>
+        <p id="advertencia" class="advertencia" hidden></p>
+        <dl class="resultados-grid">
+            <div class="resultado-principal"><dt>Contratos máximos</dt><dd id="contracts"></dd></div>
+            <div><dt>Riesgo por contrato</dt><dd id="risk_per_contract"></dd></div>
+            <div><dt>Riesgo total estimado</dt><dd id="total_risk"></dd></div>
+            <div><dt>Presupuesto restante</dt><dd id="remaining_budget"></dd></div>
+        </dl>
+        <p id="nota-slippage" class="ayuda" hidden>Se ha incluido el slippage estimado.</p>
+    </section>
 </section>
+<p class="ayuda">El resultado es una estimación. El riesgo real puede variar por slippage, ejecución, comisiones, requisitos de margen y reglas de la cuenta.</p>
+<script src="{{ url_for('static', filename='calculator.js') }}" defer></script>
 {% endblock %}
