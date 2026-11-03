@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+
+{% block titulo %}Trading Calendar{% endblock %}
+
+{% block contenido %}
+<header class="bienvenida">
+    <p class="etiqueta">Tu espacio de trading</p>
+    <h1>Trading Calendar</h1>
+    <p class="introduccion">Una perspectiva de tu actividad de trading a lo largo del tiempo.</p>
+</header>
+
+<section class="dashboard" aria-labelledby="seccion-titulo">
+    <div class="dashboard-encabezado">
+        <h2 id="seccion-titulo">Tu actividad en el calendario</h2>
+        <span class="estado">En preparación</span>
+    </div>
+    <div class="estado-vacio">
+        <span class="indicador" aria-hidden="true"></span>
+        <p>En una próxima fase podrás consultar tus operaciones por fecha y revisar tu actividad diaria.</p>
+    </div>
+</section>
+{% endblock %}

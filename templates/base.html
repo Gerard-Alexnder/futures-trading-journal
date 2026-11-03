@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Tu espacio personal para organizar y analizar operaciones de futuros.">
+    <title>{% block titulo %}{% endblock %} | Futures Trading Journal</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <a class="saltar-contenido" href="#contenido">Saltar al contenido</a>
+    <div class="contenedor">
+        <header class="cabecera">
+            <a class="marca" href="{{ url_for('inicio') }}">Futures Trading Journal</a>
+            <nav aria-label="Navegación principal">
+                <ul class="menu">
+                    {% for endpoint, etiqueta in [
+                        ('inicio', 'Dashboard'),
+                        ('journal', 'Trading Journal'),
+                        ('calendar', 'Trading Calendar'),
+                        ('calculator', 'Risk Calculator'),
+                        ('accounts', 'Accounts'),
+                        ('settings', 'Settings')
+                    ] %}
+                    <li>
+                        <a href="{{ url_for(endpoint) }}"{% if request.endpoint == endpoint %} class="activo" aria-current="page"{% endif %}>{{ etiqueta }}</a>
+                    </li>
+                    {% endfor %}
+                </ul>
+            </nav>
+        </header>
+
+        <main id="contenido" tabindex="-1">
+            {% block contenido %}{% endblock %}
+        </main>
+
+        <footer>
+            <p>Disciplina en cada operación. Perspectiva en cada revisión.</p>
+        </footer>
+    </div>
+</body>
+</html>

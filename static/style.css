@@ -136,3 +136,89 @@ footer {
         padding: 40px 20px;
     }
 }
+
+/* La navegación se comparte en todas las páginas mediante base.html. */
+.cabecera {
+    margin-bottom: 44px;
+}
+
+.marca {
+    display: inline-block;
+    margin-bottom: 20px;
+    color: var(--texto);
+    font-size: 1.1rem;
+    font-weight: 700;
+    text-decoration: none;
+    overflow-wrap: anywhere;
+}
+
+.menu {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.menu li {
+    min-width: 0;
+    max-width: 100%;
+}
+
+.menu a {
+    display: block;
+    padding: 10px 14px;
+    border: 1px solid transparent;
+    border-radius: 10px;
+    color: var(--secundario);
+    text-decoration: none;
+    overflow-wrap: anywhere;
+}
+
+.menu a:hover {
+    background: var(--superficie);
+    color: var(--texto);
+}
+
+.menu a.activo {
+    border-color: var(--acento);
+    background: var(--superficie);
+    color: var(--acento);
+    font-weight: 700;
+}
+
+a:focus-visible,
+main:focus-visible {
+    outline: 3px solid var(--acento);
+    outline-offset: 4px;
+}
+
+.saltar-contenido {
+    position: absolute;
+    top: 12px;
+    left: 16px;
+    z-index: 1;
+    padding: 8px 12px;
+    background: var(--superficie);
+    color: var(--texto);
+    transform: translateY(-200%);
+}
+
+.saltar-contenido:focus {
+    transform: translateY(0);
+}
+
+@media (max-width: 600px) {
+    .menu li {
+        flex: 1 1 140px;
+    }
+
+    .menu a {
+        height: 100%;
+    }
+
+    .cabecera {
+        margin-bottom: 32px;
+    }
+}

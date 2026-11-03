@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+
+{% block titulo %}Settings{% endblock %}
+
+{% block contenido %}
+<header class="bienvenida">
+    <p class="etiqueta">Tu espacio de trading</p>
+    <h1>Settings</h1>
+    <p class="introduccion">Un espacio para adaptar la aplicación a tus preferencias.</p>
+</header>
+
+<section class="dashboard" aria-labelledby="seccion-titulo">
+    <div class="dashboard-encabezado">
+        <h2 id="seccion-titulo">Tus preferencias de la aplicación</h2>
+        <span class="estado">En preparación</span>
+    </div>
+    <div class="estado-vacio">
+        <span class="indicador" aria-hidden="true"></span>
+        <p>En una próxima fase podrás configurar las opciones generales de tu espacio de trading.</p>
+    </div>
+</section>
+{% endblock %}

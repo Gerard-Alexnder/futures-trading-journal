@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+
+{% block titulo %}Accounts{% endblock %}
+
+{% block contenido %}
+<header class="bienvenida">
+    <p class="etiqueta">Tu espacio de trading</p>
+    <h1>Accounts</h1>
+    <p class="introduccion">Una vista organizada de tus cuentas de trading.</p>
+</header>
+
+<section class="dashboard" aria-labelledby="seccion-titulo">
+    <div class="dashboard-encabezado">
+        <h2 id="seccion-titulo">Tus cuentas en un solo lugar</h2>
+        <span class="estado">En preparación</span>
+    </div>
+    <div class="estado-vacio">
+        <span class="indicador" aria-hidden="true"></span>
+        <p>En una próxima fase podrás registrar tus cuentas y consultar la información asociada a cada una.</p>
+    </div>
+</section>
+{% endblock %}

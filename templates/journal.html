@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+
+{% block titulo %}Trading Journal{% endblock %}
+
+{% block contenido %}
+<header class="bienvenida">
+    <p class="etiqueta">Tu espacio de trading</p>
+    <h1>Trading Journal</h1>
+    <p class="introduccion">Un espacio para revisar tus decisiones y aprender de cada operación.</p>
+</header>
+
+<section class="dashboard" aria-labelledby="seccion-titulo">
+    <div class="dashboard-encabezado">
+        <h2 id="seccion-titulo">Tu diario de operaciones</h2>
+        <span class="estado">En preparación</span>
+    </div>
+    <div class="estado-vacio">
+        <span class="indicador" aria-hidden="true"></span>
+        <p>En una próxima fase podrás registrar operaciones, añadir notas y revisar tu historial de trading.</p>
+    </div>
+</section>
+{% endblock %}
