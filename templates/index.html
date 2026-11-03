@@ -3,24 +3,32 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-
+    <meta name="description" content="Tu espacio personal para organizar y analizar operaciones de futuros.">
     <title>Futures Trading Journal</title>
-
-    <link rel="stylesheet"
-          href="{{ url_for('static', filename='style.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
-
 <body>
+    <main class="contenedor">
+        <header class="bienvenida">
+            <p class="etiqueta">Tu espacio de trading</p>
+            <h1>Futures Trading Journal</h1>
+            <p class="introduccion">Bienvenido a tu diario personal de operaciones de futuros. Un espacio para construir disciplina y entender mejor tus decisiones.</p>
+        </header>
 
-    <div class="contenedor">
-        <h1>Futures Trading Journal</h1>
-
-        <p>Bienvenido a mi aplicación de trading.</p>
-
-        <h2>Dashboard</h2>
-
-        <p>Aquí mostraremos las estadísticas de nuestras operaciones.</p>
-    </div>
-
+        <section class="dashboard" aria-labelledby="dashboard-titulo">
+            <div class="dashboard-encabezado">
+                <h2 id="dashboard-titulo">Dashboard</h2>
+                <span class="estado">En preparación</span>
+            </div>
+            <div class="estado-vacio">
+                <span class="indicador" aria-hidden="true"></span>
+                <h3>Tu visión general comienza aquí</h3>
+                <p>En una próxima fase encontrarás aquí las estadísticas de tus operaciones. Por ahora, este espacio está listo para crecer contigo.</p>
+            </div>
+        </section>
+        <footer>
+            <p>Disciplina en cada operación. Perspectiva en cada revisión.</p>
+        </footer>
+    </main>
 </body>
 </html>

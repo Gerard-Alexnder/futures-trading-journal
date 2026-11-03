@@ -1,27 +1,138 @@
+:root {
+    color-scheme: dark;
+    --fondo: #0b1120;
+    --superficie: #131e30;
+    --borde: #2a3a50;
+    --texto: #edf2fa;
+    --secundario: #a9b8cb;
+    --acento: #67d8cf;
+}
+
+* {
+    box-sizing: border-box;
+}
+
 body {
-    background-color: #0f172a;
-    color: #f8fafc;
-    font-family: Arial, sans-serif;
     margin: 0;
-    padding: 0;
+    background: var(--fondo);
+    color: var(--texto);
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    line-height: 1.6;
 }
 
 .contenedor {
-    max-width: 1100px;
-    margin: 60px auto;
-    padding: 30px;
-    background-color: #1e293b;
-    border-radius: 12px;
+    width: min(100% - 40px, 1040px);
+    margin: 0 auto;
+    padding: 72px 0 24px;
+}
+
+.bienvenida {
+    margin-bottom: 40px;
+}
+
+.etiqueta {
+    margin: 0 0 12px;
+    color: var(--acento);
+    font-size: 0.8rem;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+}
+
+h1, h2, h3 {
+    line-height: 1.2;
+    overflow-wrap: anywhere;
 }
 
 h1 {
-    color: #38bdf8;
+    margin: 0 0 20px;
+    font-size: clamp(2rem, 5vw, 3.5rem);
+    letter-spacing: -0.04em;
+}
+
+.introduccion {
+    max-width: 680px;
+    margin: 0;
+    color: var(--secundario);
+    font-size: 1.1rem;
+}
+
+.dashboard {
+    overflow: hidden;
+    border: 1px solid var(--borde);
+    border-radius: 20px;
+    background: var(--superficie);
+}
+
+.dashboard-encabezado {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 24px 28px;
+    border-bottom: 1px solid var(--borde);
 }
 
 h2 {
-    color: #e2e8f0;
+    margin: 0;
+    font-size: 1.2rem;
 }
 
-p {
-    color: #94a3b8;
+.estado {
+    padding: 4px 12px;
+    border: 1px solid var(--borde);
+    border-radius: 999px;
+    color: var(--secundario);
+    font-size: 0.8rem;
+}
+
+.estado-vacio {
+    padding: 56px 28px;
+    text-align: center;
+}
+
+.indicador {
+    display: block;
+    width: 36px;
+    height: 4px;
+    margin: 0 auto 24px;
+    border-radius: 4px;
+    background: var(--acento);
+}
+
+h3 {
+    margin: 0 0 12px;
+    font-size: 1.25rem;
+}
+
+.estado-vacio p {
+    max-width: 500px;
+    margin: 0 auto;
+    color: var(--secundario);
+}
+
+footer {
+    margin-top: 24px;
+    color: var(--secundario);
+    font-size: 0.85rem;
+}
+
+@media (max-width: 600px) {
+    .contenedor {
+        width: calc(100% - 32px);
+        padding-top: 40px;
+    }
+
+    .bienvenida {
+        margin-bottom: 28px;
+    }
+
+    .dashboard-encabezado {
+        padding: 20px;
+    }
+
+    .estado-vacio {
+        padding: 40px 20px;
+    }
 }
