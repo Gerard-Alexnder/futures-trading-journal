@@ -2,9 +2,9 @@
 
 Aplicación web personal para organizar operaciones de futuros y, en fases posteriores, gestionar riesgo y analizar estadísticas de trading.
 
-## Estado actual: Fase 2
+## Estado actual: Fase 3A
 
-Servidor Flask con navegación compartida, diseño oscuro adaptable y calculadora de riesgo funcional en `/calculator`. Las otras cinco páginas siguen siendo provisionales. No hay almacenamiento, ejecución de órdenes, conexión a brokers ni autenticación.
+Servidor Flask con navegación compartida, diseño oscuro adaptable y calculadora de riesgo funcional en `/calculator`. Las otras cinco páginas siguen siendo provisionales. Existe un servicio Python de cuentas y operaciones con SQLite, todavía sin integración con las páginas. No hay envío de órdenes, conexión a brokers ni autenticación.
 
 ## Tecnologías
 
@@ -198,3 +198,118 @@ Se verifican los seis casos requeridos, presupuestos exactos e insuficientes, va
 8. Revisa a 320 px, 375 px y escritorio, y navega con teclado. Comprueba foco visible, checkbox, mensajes y ausencia de desplazamiento horizontal.
 
 El resultado es una estimación: el riesgo real puede variar por slippage, ejecución, comisiones, requisitos de margen y reglas de la cuenta. La calculadora no valida margen ni ejecuta operaciones. Requiere JavaScript habilitado. Las comprobaciones visuales y la simulación de red lenta deben realizarse en navegador.
+
+## Fase 3A: persistencia y motor de operaciones
+
+### Módulos y uso
+
+- `database.py`: conexiones, claves foráneas, transacciones, esquema y comandos de inicialización/verificación.
+- `trade_calculations.py`: validaciones numéricas y reproducción pura de una historia completa.
+- `trade_service.py`: cuentas, operaciones, lotes de ejecuciones y reversiones explícitas, con persistencia atómica.
+- `tests/test_database.py`, `tests/test_trade_calculations.py`, `tests/test_trade_service.py`: pruebas adicionales con bases temporales aisladas.
+
+No se crea la base al importar los módulos ni al arrancar Flask. Desde la raíz, con el entorno existente:
+
+```bash
+uv run --no-sync python -m database init
+uv run --no-sync python -m database verify
+```
+
+La ruta predeterminada es `instance/journal.sqlite3`, relativa al código del proyecto, no al directorio de ejecución. Ambos comandos aceptan `--path /ruta/journal.sqlite3`. `init` crea el directorio padre y es idempotente; nunca borra datos existentes. `verify` abre en modo de solo lectura, comprueba versión, presencia de tablas, `integrity_check` y `foreign_key_check`; una ruta inexistente falla sin crear archivos. No constituye una comparación exhaustiva del DDL contra alteraciones externas.
+
+La base y los archivos SQLite auxiliares quedan excluidos de Git. No deben compartirse conexiones entre hilos. El servicio abre y cierra una conexión por llamada; todas activan `foreign_keys`. La inicialización del proyecto personal es una acción explícita del usuario; las pruebas no utilizan esa ruta.
+
+Ejemplo de API Python tras inicializar:
+
+```python
+from trade_service import TradeService
+
+service = TradeService()
+account_id = service.create_account('Cuenta personal', 'personal', platform='Plataforma')
+trade_id = service.create_trade(account_id, 'MNQ', 'long', strategy='Ejemplo')
+service.add_executions(trade_id, [
+    dict(execution_type='entry', quantity=1, price='20000',
+         executed_at='2026-11-10T10:00:00-04:00', commission='1.25'),
+    dict(execution_type='exit', quantity=1, price='20050',
+         executed_at='2026-11-10T10:05:00-04:00', commission='1.25'),
+])
+result = service.get_trade(trade_id)
+# result['summary']: gross_pnl=Decimal('100.00'), net_pnl=Decimal('97.50')
+```
+
+Otras operaciones: `list_accounts`, `set_account_active`, `list_trades(account_id)`, `update_trade_metadata`, `add_execution` y `record_reversal`. `update_trade_metadata` sustituye estrategia y notas; los parámetros omitidos quedan en NULL. Los identificadores devueltos por altas son enteros. Los resultados financieros son `Decimal`; una futura API deberá serializarlos como cadenas.
+
+### Esquema versión 1
+
+Tablas `STRICT` con SQLite ≥3.37; en versiones anteriores se mantienen tipos declarados y comprobaciones explícitas `typeof` para cantidades, secuencias, precios y costos. No se emplea `REAL`.
+
+| Tabla | Columnas |
+|---|---|
+| `accounts` | `id INTEGER PRIMARY KEY`, `name TEXT`, `account_type TEXT`, `platform TEXT NULL`, `created_at TEXT`, `is_active INTEGER DEFAULT 1` |
+| `trades` | `id INTEGER PRIMARY KEY`, `account_id INTEGER`, `symbol TEXT`, `direction TEXT`, `strategy TEXT NULL`, `notes TEXT NULL`, `created_at TEXT` |
+| `executions` | `id INTEGER PRIMARY KEY`, `trade_id INTEGER`, `account_id INTEGER`, `executed_at TEXT`, `sequence INTEGER`, `execution_type TEXT`, `quantity INTEGER`, `price_ticks INTEGER`, `commission_microusd INTEGER DEFAULT 0`, `fees_microusd INTEGER DEFAULT 0`, `source TEXT`, `external_execution_id TEXT NULL`, `external_namespace TEXT NULL`, `created_at TEXT` |
+
+Salvo los campos marcados NULL y las claves primarias, todos son `NOT NULL`. Restricciones:
+
+- Tipos de cuenta: `funded`/`personal`; dirección: `long`/`short`; ejecución: `entry`/`exit`; origen: `manual`/`imported`; actividad: 0/1.
+- Nombre no vacío, hasta 200 caracteres; plataforma opcional con el mismo límite. El servicio limita estrategia a 200 y notas a 10000 caracteres.
+- Símbolos admitidos generados desde las claves de `CONTRACTS` durante la inicialización.
+- FK `trades.account_id → accounts.id`, con `ON DELETE RESTRICT`.
+- `UNIQUE(trades.id, trades.account_id)` y FK compuesta `executions(trade_id, account_id) → trades(id, account_id)`, también restrictiva.
+- Cantidad y secuencia enteras de 1 a 1000000000; precio en ticks entero positivo; costos enteros de 0 a 1000000000000000.
+- `UNIQUE(trade_id, sequence)`.
+- ID externo y namespace ambos nulos o ambos no vacíos.
+- Índice único parcial `(account_id, external_namespace, external_execution_id)` para IDs no nulos.
+- Índices de consulta `(account_id, created_at, id)` en trades y `(trade_id, executed_at, sequence)` en executions.
+
+Los nombres de cuenta no son únicos. No se almacenan estado, promedio ni P&L calculados. Las reglas que dependen de varias filas y la normalización de fechas pertenecen al servicio; el SQL directo puede eludirlas y no es una interfaz de escritura soportada. No hay triggers que implementen inmutabilidad ni auditoría.
+
+### Exactitud, promedio y P&L
+
+El catálogo `contracts.py` es la única fuente de tick y multiplicador. El servicio transforma precio / tick a un entero exacto. Costos se almacenan en millonésimas de USD, con seis decimales como máximo; se rechaza una escala mayor incluso si son ceros adicionales. Tampoco se admiten `float`, booleanos, NaN ni infinitos. Precios admiten hasta seis decimales y deben ser múltiplos del tick. Los importes y precios tienen límite de 1000000000, 32 dígitos significativos y entradas de texto de hasta 64 caracteres. Cantidad abierta máxima: 1000000000.
+
+El motor utiliza exclusivamente `Decimal` para cálculos financieros, en contexto local de 50 dígitos y `ROUND_HALF_EVEN`. Para cantidad abierta Q y base de precio B (puntos × contratos), una entrada q a p produce B'=B+p×q y promedio B'/(Q+q). En una salida parcial se retira promedio×q de la base y se conserva el promedio del remanente. Una entrada posterior utiliza esa base remanente.
+
+Bruto de salida: `(salida − promedio) × multiplicador × cantidad` para Long, con signo invertido para Short. Cada ejecución suma sus costos totales: no son costos por contrato ni costos round-trip. Neto acumulado = bruto realizado − comisiones incurridas − cargos incurridos. No se añade slippage estimado sobre precios ejecutados. Una operación abierta puede tener neto negativo sin salidas; su neto parcial no es el resultado final ni incluye valorización no realizada.
+
+Los promedios periódicos se aproximan a 50 dígitos; no se cuantiza a centavos durante el cálculo. Se mantienen también los flujos de entrada y salida, exactos bajo los límites establecidos. Al cerrar, el bruto total se reconcilia con esos flujos y el último resultado realizado absorbe el residuo decimal. La base pasa a cero y el promedio a `None`. `realized_by_execution` expone el bruto de cada ejecución; las entradas aportan cero. Consumidores que sumen estos valores deben usar el mismo contexto de precisión, no el contexto Decimal predeterminado de 28 dígitos.
+
+Las pruebas comparan promedios periódicos con precisión mayor y cierres parciales con un oráculo racional independiente (`Fraction`, solo en pruebas). Tolerancias: 1e-44 para el ejemplo de promedio y 1e-43 para la historia con entradas posteriores. El cierre se verifica exactamente contra los flujos; no se promete una cota universal de error intermedio para historias arbitrariamente extensas. Presentación futura: redondeo monetario `ROUND_HALF_UP`, separado de los cálculos.
+
+Modificar retroactivamente ticks o multiplicadores de `contracts.py` reinterpretaría precios o alteraría el P&L histórico. Las especificaciones actuales deben permanecer estables; futuros cambios requieren versionar el catálogo y migrar explícitamente las referencias históricas.
+
+### Fechas, secuencias y estados
+
+El servicio exige timestamps con zona horaria y los normaliza a UTC con seis decimales: `YYYY-MM-DDTHH:MM:SS.ffffffZ`. `created_at` indica registro; `executed_at`, ejecución económica. No se supone la zona local para fechas sin offset.
+
+Cada alta asigna `max(sequence)+1` dentro de `BEGIN IMMEDIATE`. En lotes se asignan secuencias según el orden de la lista. Nunca se renumeran filas existentes. El procesamiento y las consultas usan siempre `(executed_at, sequence)`, independientemente de IDs o del orden físico en SQLite.
+
+Una inserción histórica obtiene una secuencia mayor, pero se ubica cronológicamente por su timestamp. Si empata con filas existentes, queda después de ellas; esta API no permite insertar delante de una ejecución existente con igual timestamp. Un rollback no reserva números: pueden reutilizarse secuencias de filas que nunca se confirmaron. La futura importación deberá proporcionar el orden correcto del lote para timestamps iguales.
+
+Estados derivados: `pending` sin ejecuciones; `open` con posición; `closed` al llegar a cero después de abrir. Salidas sin posición, sobrecierres y cualquier ejecución posterior al cierre son inválidos. El comando de alta rechaza también inserciones históricas en operaciones ya cerradas.
+
+Las cuentas archivadas conservan lectura del historial, pero bloquean nuevas operaciones, ejecuciones y cambios de notas/estrategia. Reactivar es la excepción administrativa permitida. No se implementan borrado de cuentas ni cambios de dirección, cuenta o símbolo de una operación.
+
+### Atomicidad, errores y evolución
+
+Cada comando de escritura toma `BEGIN IMMEDIATE` antes de leer y validar. Los lotes se reproducen completos antes de insertar. Cualquier fallo revierte toda la transacción, incluido un conflicto externo que ocurra después de insertar la primera fila. Timeout SQLite: cinco segundos; no hay reintentos automáticos. Dos escritores no pueden confirmar cierres basados en la misma posición previa.
+
+Errores: `TradeValidationError`, `NotFoundError`, `ArchivedAccountError`, `ConflictError`, `PersistenceError` y `DatabaseError`. Los errores SQLite originales se conservan como causa para diagnóstico. Un ID externo repetido genera conflicto, incluso si el contenido coincide; no se ignora automáticamente.
+
+`PRAGMA user_version=1` identifica el esquema. Se rechazan versiones desconocidas y bases sin versión que ya contienen tablas. Futuras migraciones deberán ser incrementales, transaccionales y precedidas por una copia de seguridad; `CREATE TABLE IF NOT EXISTS` no sustituye una migración. No hay migraciones de versiones anteriores porque esta es la primera persistencia.
+
+**Fase 3B — correcciones:** `_revalidate` reproduce una historia candidata completa y no prohíbe por sí mismo corregir una operación anteriormente cerrada. La prohibición actual reside en el comando de alta. Un futuro comando deberá cargar la historia bajo transacción, conservar las secuencias de filas sin cambios, construir la historia corregida, validarla completamente y guardar cambios más auditoría de forma atómica. Si cambia el orden de empates, deberá hacerlo explícitamente y auditarlo; no reutilizará silenciosamente el alta normal. Esta fase no expone edición/eliminación de ejecuciones.
+
+**Reversiones explícitas:** `record_reversal(trade_id, closing_execution, opening_execution)` recibe una salida que cierre toda la posición y una entrada contraria con el mismo timestamp. Crea dos operaciones independientes dentro de una transacción; si la segunda parte falla, revierte también el cierre. El llamador proporciona cantidades y costos ya repartidos. No reconstruye órdenes ni divide automáticamente comisiones.
+
+**Fase 3C — procedencia de importaciones:** añadir tabla `external_executions` con cuenta, namespace, ID único, cantidad, costos originales y metadatos de la fuente. Cada original podrá relacionarse con varias filas internas mediante una tabla de asignaciones; la deduplicación residirá en la original. Se migrarán los IDs actualmente presentes en executions a ese modelo, sin copiar el mismo ID a ambas partes ni añadir sufijos artificiales. El namespace identifica proveedor y ámbito real de unicidad, no el nombre del archivo ni el lote de importación.
+
+Para dividir costos: repartir proporcionalmente por contratos en unidades microusd, redondear la primera parte con una regla explícita y asignar el resto exacto a la última. Validar suma de cantidades y de costos contra la ejecución original y confirmar original/asignaciones/operaciones en una transacción. Ejemplo: venta de 5 que cierra Long 3 y abre Short 2; comisión original 1 microusd → primera parte 1, segunda 0 con mitades hacia arriba. Comisión y cargos se reparten por separado. La relación y el reparto automático quedan pendientes de Fase 3C.
+
+### Verificación de Fase 3A
+
+```bash
+uv run --no-sync python -W error::ResourceWarning -m unittest discover -s tests -v
+```
+
+Las pruebas crean bases reales mediante `TemporaryDirectory`, incluyendo verificaciones CLI y dos conexiones concurrentes. Cubren ejemplos Long/Short, entradas múltiples, cierres parciales, costos, precisión, timestamps empatados e históricos, cuentas archivadas, aislamiento, restricciones SQL, deduplicación, rollback, reversiones, persistencia y regresión completa de calculadora/rutas. No inicializan ni modifican la base personal. No se añadieron dependencias, formularios, importadores ni endpoints.
