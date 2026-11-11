@@ -1,7 +1,9 @@
 """API de negocio sin Flask; una conexión independiente por llamada."""
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from decimal import Decimal, localcontext
 import sqlite3
+import re
 
 from contracts import CONTRACTS
 from idempotency import ConflictError, execute_once
@@ -17,6 +19,13 @@ class NotFoundError(TradeValidationError):
 
 class ArchivedAccountError(TradeValidationError):
     pass
+
+
+class DraftValidationError(TradeValidationError):
+    """Errores estructurados: campos generales y filas identificadas por row_id."""
+    def __init__(self, errors):
+        self.errors = errors
+        super().__init__('Revisa los campos indicados y el orden de las ejecuciones.')
 
 
 class PersistenceError(RuntimeError):
@@ -216,13 +225,144 @@ class TradeService:
                 external_execution_id=external_id, external_namespace=namespace, created_at=timestamp(),
             ))
         self._revalidate(trade, history + candidates)
+        return self._insert_executions(connection, candidates)
+
+    @staticmethod
+    def _insert_executions(connection, rows):
         ids = []
-        for row in candidates:
+        for row in rows:
             fields = ','.join(row)
             placeholders = ','.join('?' for _ in row)
             ids.append(connection.execute(
                 f'INSERT INTO executions({fields}) VALUES({placeholders})', tuple(row.values())).lastrowid)
         return ids
+
+    @staticmethod
+    def _normalize_draft(account_id, symbol, direction, executions, strategy, notes, mode):
+        errors = {'fields': {}, 'rows': {}}
+
+        def field(name, operation):
+            try:
+                return operation()
+            except TradeValidationError as error:
+                errors['fields'][name] = str(error)
+
+        account_id = field('account_id', lambda: integer(account_id, 'account_id'))
+        if not isinstance(symbol, str) or symbol not in CONTRACTS:
+            errors['fields']['symbol'] = 'Selecciona ES, MES, NQ o MNQ.'
+        if direction not in ('long', 'short'):
+            errors['fields']['direction'] = 'Selecciona Long o Short.'
+        if mode not in ('progressive', 'historical'):
+            errors['fields']['mode'] = 'Modalidad inválida.'
+        strategy = field('strategy', lambda: text_field(strategy, 'strategy', optional=True))
+        notes = field('notes', lambda: text_field(notes, 'notes', optional=True, limit=10000))
+        if not isinstance(executions, list) or not 1 <= len(executions) <= 200:
+            errors['fields']['executions'] = 'Incluye entre 1 y 200 ejecuciones.'
+        if errors['fields']:
+            raise DraftValidationError(errors)
+        if mode == 'progressive' and (len(executions) != 1 or not isinstance(executions[0], dict)
+                                      or executions[0].get('execution_type') != 'entry'):
+            raise DraftValidationError({'fields': {'mode': 'El registro progresivo requiere exactamente una entrada.'}, 'rows': {}})
+        normalized = []
+        identities = set()
+        allowed = {'row_id', 'executed_at', 'execution_type', 'quantity', 'price', 'commission', 'fees'}
+        for index, raw in enumerate(executions, 1):
+            if not isinstance(raw, dict):
+                errors['rows'][str(index)] = {'row_id': 'La fila debe ser un objeto.'}
+                continue
+            identity = raw.get('row_id')
+            if (not isinstance(identity, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', identity)
+                    or identity in identities):
+                errors['fields']['executions'] = 'Cada fila necesita un row_id único de hasta 64 caracteres ASCII.'
+                continue
+            identities.add(identity)
+            row_errors = {}
+            if set(raw) - allowed:
+                row_errors['row_id'] = 'La fila contiene campos no admitidos (no envíes sequence ni source).'
+            row = {'row_id': identity, 'sequence': index}
+            kind = raw.get('execution_type')
+            if kind not in ('entry', 'exit'):
+                row_errors['execution_type'] = 'Selecciona entry o exit.'
+            row['execution_type'] = kind
+            for name in ('executed_at', 'quantity', 'price', 'commission', 'fees'):
+                try:
+                    value = raw.get(name, '0' if name in ('commission', 'fees') else None)
+                    if not isinstance(value, str) or not value or len(value) > 64:
+                        raise TradeValidationError('Envía una cadena no vacía de hasta 64 caracteres.')
+                    if name == 'executed_at':
+                        # ISO explícito: evita aceptar fechas sin zona o perder submicrosegundos.
+                        pattern = r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,6})?)?(?:Z|[+-](?:0\d|1[0-4]):[0-5]\d)'
+                        if not re.fullmatch(pattern, value) or (value[-6:-3] in ('+14', '-14') and value[-2:] != '00'):
+                            raise TradeValidationError('Usa una fecha ISO con offset explícito y hasta seis decimales de segundo.')
+                        row[name] = timestamp(value)
+                    elif name == 'quantity':
+                        if not re.fullmatch(r'[0-9]{1,10}', value.strip()):
+                            raise TradeValidationError('La cantidad debe ser un entero positivo.')
+                        row[name] = integer(int(value), name)
+                    elif name == 'price':
+                        row['price_ticks'] = price_units(value, symbol)
+                    else:
+                        row[name + '_microusd'] = money_units(value, name)
+                except TradeValidationError as error:
+                    row_errors[name] = str(error)
+            if row_errors:
+                errors['rows'][identity] = row_errors
+            normalized.append(row)
+        if errors['fields'] or errors['rows']:
+            raise DraftValidationError(errors)
+        return dict(account_id=account_id, symbol=symbol, direction=direction,
+                    strategy=strategy, notes=notes, mode=mode, executions=normalized)
+
+    def _preview_normalized(self, draft):
+        ordered = sorted(draft['executions'], key=lambda row: (row['executed_at'], row['sequence']))
+        # Reutiliza el motor por prefijos para localizar la fila que invalida la historia.
+        for index, row in enumerate(ordered, 1):
+            try:
+                summary = self._revalidate(draft, ordered[:index])
+            except TradeValidationError as error:
+                raise DraftValidationError({'fields': {}, 'rows': {
+                    row['row_id']: {'history': str(error)}}}) from error
+        # Conversión de unidades para mostrar los fills, sin otra implementación financiera.
+        with localcontext() as context:
+            context.prec = 50
+            displayed = [{**row,
+                          'price': format(Decimal(row['price_ticks']) * CONTRACTS[draft['symbol']]['tick_size'], 'f'),
+                          'commission': format(Decimal(row['commission_microusd']) / 1_000_000, 'f'),
+                          'fees': format(Decimal(row['fees_microusd']) / 1_000_000, 'f')}
+                         for row in ordered]
+        return {'summary': summary, 'executions': displayed}
+
+    def preview_trade(self, account_id, symbol, direction, executions, strategy=None, notes=None, *, mode='historical'):
+        draft = self._normalize_draft(account_id, symbol, direction, executions, strategy, notes, mode)
+        with self._connection() as connection:
+            # query_only impide escrituras accidentales en esta conexión de previsualización.
+            connection.execute('PRAGMA query_only=ON')
+            self._account(connection, draft['account_id'], writable=True)
+            return self._preview_normalized(draft)
+
+    def create_trade_with_executions(self, account_id, symbol, direction, executions,
+                                     strategy=None, notes=None, *, request_id, mode='historical'):
+        draft = self._normalize_draft(account_id, symbol, direction, executions, strategy, notes, mode)
+        # row_id es identidad de presentación; la secuencia sí pertenece al contenido económico.
+        canonical = {**draft, 'executions': [{k: v for k, v in row.items() if k != 'row_id'}
+                                           for row in draft['executions']]}
+        with self._connection(write=True) as connection:
+            # También en reintentos: una clave previa no permite escribir sobre cuentas archivadas.
+            self._account(connection, draft['account_id'], writable=True)
+
+            def create():
+                self._preview_normalized(draft)
+                trade_id = self._create_trade(connection, draft['account_id'], draft['symbol'],
+                                              draft['direction'], draft['strategy'], draft['notes'])
+                rows = [{**{k: v for k, v in row.items() if k != 'row_id'},
+                         'trade_id': trade_id, 'account_id': draft['account_id'], 'source': 'manual',
+                         'external_execution_id': None, 'external_namespace': None, 'created_at': timestamp()}
+                        for row in draft['executions']]
+                self._insert_executions(connection, rows)
+                self._revalidate(draft, self._executions(connection, trade_id))
+                return {'trade_id': trade_id}
+
+            return execute_once(connection, request_id, 'create_trade_with_executions', canonical, create)
 
     def record_reversal(self, trade_id, closing_execution, opening_execution):
         """Registra dos partes explícitas; no reconstruye ni reparte órdenes importadas."""

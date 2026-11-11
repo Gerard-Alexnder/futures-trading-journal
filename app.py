@@ -8,10 +8,12 @@ from contracts import CONTRACTS
 
 from web_support import configure_web
 from account_routes import register_account_routes
+from journal_routes import register_journal_routes
 
 app = Flask(__name__)
 configure_web(app)
 register_account_routes(app)
+register_journal_routes(app)
 
 
 @app.route("/")

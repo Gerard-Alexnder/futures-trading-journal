@@ -23,7 +23,7 @@
                         ('settings', 'Settings')
                     ] %}
                     <li>
-                        <a href="{{ url_for(endpoint) }}"{% if request.endpoint == endpoint %} class="activo" aria-current="page"{% endif %}>{{ etiqueta }}</a>
+                        <a href="{{ url_for(endpoint) }}"{% if request.endpoint == endpoint or (endpoint == 'journal' and request.endpoint == 'journal_new') %} class="activo" aria-current="page"{% endif %}>{{ etiqueta }}</a>
                     </li>
                     {% endfor %}
                 </ul>

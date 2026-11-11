@@ -2,9 +2,9 @@
 
 Aplicación web personal para organizar operaciones de futuros y, en fases posteriores, gestionar riesgo y analizar estadísticas de trading.
 
-## Estado actual: Fase 3B.1
+## Estado actual: Fase 3B.2
 
-Servidor Flask con navegación compartida, diseño oscuro adaptable y calculadora de riesgo funcional en `/calculator`. Accounts permite gestionar cuentas; Dashboard, Journal, Calendar y Settings siguen siendo provisionales. Existe un servicio Python de cuentas y operaciones con SQLite, integrado con Accounts. No hay envío de órdenes, conexión a brokers ni autenticación.
+Servidor Flask con navegación compartida, diseño oscuro adaptable y calculadora de riesgo funcional en `/calculator`. Accounts permite gestionar cuentas y `/journal/new` registra operaciones manuales. El listado de Journal, Dashboard, Calendar y Settings siguen siendo provisionales. Existe un servicio Python de cuentas y operaciones con SQLite, integrado con Accounts. No hay envío de órdenes, conexión a brokers ni autenticación.
 
 ## Tecnologías
 
@@ -379,3 +379,106 @@ git diff --check
 Las pruebas usan exclusivamente bases temporales. `tests/fixtures/schema_v1.sql` conserva el esquema original de Fase 3A, sin datos personales, para probar migraciones reales. Los tests previos de rutas ahora configuran SECRET_KEY de prueba y base temporal; los tests previos de base esperan v2 y conservan verificaciones de rechazo de versiones futuras. No se eliminaron pruebas.
 
 El diseño CSS contempla móvil y escritorio, pero las pruebas Flask no sustituyen una revisión visual/manual de navegador. La aplicación sigue siendo personal y sin autenticación; no debe exponerse públicamente como si CSRF aportara control de acceso. Siguen pendientes formularios de operaciones, historial funcional, correcciones auditables, importaciones, control de revisión en escrituras de operaciones y reglas avanzadas de cuentas fondeadas. La descripción histórica de esquema v1 anterior se conserva como referencia; v2 es la versión actual requerida.
+
+## Fase 3B.2: registro manual inicial
+
+`/journal/new` (New Trade) registra operaciones en cuentas activas mediante dos modalidades:
+
+- **Progresiva:** exactamente una entrada inicial; queda `open`. Añadir ejecuciones después del guardado mediante interfaz corresponde a 3B.3.
+- **Histórica:** tabla de 1–200 ejecuciones, con entradas y salidas. Puede quedar `open` o `closed`; no admite un lote vacío, solo salidas, sobrecierres ni actividad posterior al cierre.
+
+El Journal provisional incluye el enlace al formulario. Tras guardar se muestra una confirmación con el ID; no se añade un detalle completo ni un historial funcional. El esquema sigue en **v2**, sin migraciones nuevas. El motor financiero, catálogo y calculadora no cambian.
+
+### Borrador y fechas
+
+Selecciona cuenta, instrumento, dirección, estrategia opcional (200 caracteres) y notas opcionales (10000). Cada fila contiene tipo, fecha/hora, cantidad entera positiva, precio que respete el tick, comisión total y cargos totales de esa ejecución. Costos admiten hasta seis decimales; no se redondean al persistir. Todos los límites monetarios/técnicos del motor de Fase 3A siguen aplicando.
+
+La tabla permite agregar, eliminar y mover filas con ↑/↓. Estas acciones afectan solo al borrador. El cambio de histórica a progresiva solicita confirmación si descarta filas o transforma una salida en entrada. Las filas conservan su identidad `row_id` al editar o moverlas; la secuencia persistida no la elige directamente el cliente.
+
+El formulario muestra explícitamente un **offset fijo**, inicialmente UTC−04:00 (Santo Domingo), editable incluyendo offsets de media hora mediante «Otro offset». No utiliza silenciosamente la zona del navegador ni transforma `datetime-local` mediante `Date`. Añade el offset seleccionado al texto de cada fila; el servidor valida y normaliza a UTC con seis decimales de segundo. Se admiten hasta seis decimales de segundo en la API y no se truncan fracciones superiores.
+
+El offset es común a las filas del formulario. Para datos que crucen cambios de horario estacional, convierte previamente cada hora a UTC y selecciona UTC+00:00. La API acepta offsets diferentes por fila. El servidor rechaza fechas sin zona, fechas imposibles y offsets fuera de ±14:00. No incorpora reglas IANA/DST ni dependencias de fechas.
+
+La secuencia 1…N se asigna por orden de filas recibidas. El motor ordena por `(executed_at UTC, sequence)`: las fechas distintas se ordenan cronológicamente y los empates conservan exactamente el orden explícito. El preview muestra ese orden, junto a cantidades, precios y costos. Guardado y preview comparten la normalización. No se aceptan campos `sequence`, `source` ni identificadores externos en un borrador manual.
+
+### Servicios y API
+
+Servicios nuevos en `TradeService`:
+
+```text
+preview_trade(account_id, symbol, direction, executions,
+              strategy=None, notes=None, *, mode='historical')
+
+create_trade_with_executions(account_id, symbol, direction, executions,
+                            strategy=None, notes=None, *, request_id,
+                            mode='historical')
+```
+
+`preview_trade` verifica cuenta activa y ejecuta el motor existente sobre los datos normalizados. Usa `PRAGMA query_only=ON`, no crea operaciones, ejecuciones ni claves idempotentes. Devuelve `summary` y `executions` en el orden efectivo. Para identificar la fila que invalida una historia, reproduce prefijos con el mismo motor; el costo es cuadrático y está acotado a 200 filas.
+
+`create_trade_with_executions` abre una única transacción `BEGIN IMMEDIATE`, verifica la cuenta, resuelve la idempotencia y crea operación + ejecuciones + registro de solicitud conjuntamente. Revalida la historia con el motor, también después de insertar; cualquier fallo revierte todo. Devuelve únicamente `{'trade_id': ...}`. No llama a dos comandos públicos que confirmen transacciones separadas.
+
+Endpoints:
+
+- GET `/journal/new`: formulario con cuentas activas y selección de sesión como preferencia inicial.
+- POST `/api/journal/preview`: previsualización sin persistencia.
+- POST `/api/journal`: creación atómica e idempotente.
+
+Ambos POST requieren sesión configurada, JSON y cabecera `X-CSRF-Token`. El preview también utiliza CSRF por coherencia con la política de sesión. Límite exclusivo de estas solicitudes: 512 KiB; Accounts conserva 16 KiB y la calculadora 4096 bytes.
+
+Ejemplo de cuerpo para preview:
+
+```json
+{
+  "account_id": 1,
+  "symbol": "MNQ",
+  "direction": "long",
+  "strategy": "Reversal",
+  "notes": null,
+  "mode": "progressive",
+  "executions": [
+    {
+      "row_id": "entry-1",
+      "execution_type": "entry",
+      "executed_at": "2026-11-10T10:00:00-04:00",
+      "quantity": "2",
+      "price": "20000",
+      "commission": "2.50",
+      "fees": "0"
+    }
+  ]
+}
+```
+
+Creación utiliza el mismo cuerpo más `request_id` aleatorio de 16–128 caracteres admitidos. `account_id` es entero; precios, cantidades y costos de entrada son cadenas. Los importes Decimal de respuesta son cadenas; cantidades resultantes, secuencias y representaciones persistidas en ticks/micro-USD siguen siendo enteros. `average_price` es null al cierre.
+
+Respuestas de éxito: HTTP 200 con `{ok: true, result: ...}`, tanto en creación como en repetición idempotente. Errores: 400 formato/campos requeridos, 403 CSRF, 404 cuenta inexistente, 409 cuenta archivada o conflicto, 413 tamaño, 422 validación y 503 configuración/persistencia. Forma de errores: `{ok: false, errors: {fields: {...}, rows: {row_id: {field: mensaje}}}}`. `history` identifica una incompatibilidad financiera de la fila con las anteriores. No se muestran SQL ni trazas internas.
+
+### Idempotencia, asincronía y resumen
+
+La huella incluye cuenta, símbolo, dirección, estrategia, notas, modalidad y todas las ejecuciones normalizadas con su secuencia. Excluye `row_id` (identidad visual) y fechas de registro generadas. Valores equivalentes como `20000`/`20000.00`, cantidades `2`/`02` y offsets equivalentes producen el mismo contenido normalizado. Cambiar el orden del array cambia sus secuencias y se considera contenido distinto, incluso cuando sus timestamps distintos permitirían el mismo orden cronológico.
+
+La cuenta se comprueba antes de devolver un resultado idempotente: archivar después de guardar bloquea el reintento hasta reactivar. Una clave no omite esta validación. La aplicación sigue siendo personal, sin autenticación; no existe autorización multiusuario.
+
+El navegador invalida el preview al editar o reordenar, cancela solicitudes anteriores y descarta respuestas obsoletas. Guardar requiere confirmar el resumen. Durante guardado se bloquea el borrador; ante pérdida de respuesta o fallo 5xx, se conserva el mismo contenido y clave para reintentar sin duplicados. La clave solo se guarda en memoria: **no recargues ni cierres la página cuando el resultado sea incierto**. La advertencia estándar `beforeunload` compara todos los campos y las filas con el estado inicial: no aparece al abrir el formulario ni al deshacer todos los cambios, protege también cambios aislados en notas/cuenta/offset y se desactiva tras guardar correctamente. La presentación del diálogo depende del navegador y normalmente requiere interacción previa; no garantiza protección al terminar el proceso o cerrar aplicaciones móviles. No se persisten borradores en localStorage ni en SQLite; una recarga puede perderlos.
+
+JavaScript solo presenta resultados del servidor y formatea dinero con redondeo visual; no calcula P&L. El resumen distingue bruto realizado, costos incurridos y neto acumulado. No incluye ganancias no realizadas ni descuento adicional de slippage. El caso MNQ de aceptación produce netos −2.50, 97.50 y 257.50 al previsualizar uno, dos y tres fills, respectivamente; el histórico completo queda cerrado con bruto 260.
+
+### Verificación y alcance
+
+```bash
+uv run --no-sync python -W error::ResourceWarning -m unittest discover -s tests -v
+git diff --check
+```
+
+Las pruebas adicionales de `test_trade_drafts.py` y `test_journal_routes.py` utilizan bases temporales: preview sin cambios en el archivo, progresiva/histórica, equivalencia preview/persistencia, Long/Short, múltiples entradas, costos, offsets/empates, campos inválidos, cuentas, límites, rollback en mitad del lote y al registrar la clave, concurrencia, CSRF y regresiones. No se modifican ni relajan las pruebas anteriores.
+
+La interfaz requiere JavaScript; en móvil la tabla se presenta como tarjetas de campos. No se implementan edición, adición de ejecuciones a una operación guardada, historial avanzado, auditoría, importaciones ni reglas de cuentas fondeadas.
+
+Validación optativa de JavaScript en Firefox, con un servidor WebDriver ya disponible (no instala dependencias):
+
+```bash
+PYTHONPATH=. WEBDRIVER_URL=http://127.0.0.1:4444 uv run --no-sync python tests/browser_journal_validation.py
+```
+
+El script usa una base temporal y una clave efímera de prueba. Comprueba la cancelación del evento `beforeunload` para distintos campos, cambios revertidos y guardado confirmado; offsets fraccionarios, errores, respuestas tardías y pérdida de respuesta de guardado. Las capturas de escritorio y ancho móvil se guardan en `/tmp/journal-desktop.png` y `/tmp/journal-mobile.png`. No prueba terminación forzada del navegador ni garantiza que el navegador muestre su diálogo nativo en todas las circunstancias.

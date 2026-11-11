@@ -354,3 +354,34 @@ summary:focus-visible { outline: 3px solid var(--acento); outline-offset: 4px; }
     .account-actions { flex-direction: column; }
     .account-actions details { flex-basis: auto; width: 100%; }
 }
+
+/* Registro inicial de operaciones. */
+.contenedor:has(#trade-form) { width: min(100% - 32px, 1440px); }
+#trade-form fieldset { min-width: 0; }
+#trade-form legend { padding: 0 8px; font-weight: 700; }
+#trade-form textarea { width: 100%; box-sizing: border-box; margin-top: 8px; padding: 10px; border: 1px solid var(--borde); border-radius: 8px; background: var(--fondo); color: var(--texto); font: inherit; }
+#trade-form textarea:focus-visible { outline: 3px solid var(--acento); }
+#trade-form .full-width { grid-column: 1 / -1; }
+.execution-table-wrap { overflow-x: auto; margin: 20px 0; }
+.execution-table { width: 100%; min-width: 1140px; border-collapse: collapse; font-size: .9rem; }
+.execution-table th, .execution-table td { padding: 8px; vertical-align: top; text-align: left; border-bottom: 1px solid var(--borde); }
+.execution-table input { min-width: 105px; }
+.execution-table input[type="datetime-local"] { min-width: 240px; }
+.execution-table select { min-width: 100px; }
+.row-number { white-space: nowrap; }
+.row-actions { min-width: 150px; }
+.row-actions button { margin: 4px; padding: 6px 10px; white-space: nowrap; }
+.row-errors { max-width: 200px; overflow-wrap: anywhere; }
+#trade-errors { color: #fcd68a; overflow-wrap: anywhere; }
+#effective-order { overflow-wrap: anywhere; }
+#save-trade { margin-top: 16px; }
+[aria-invalid="true"] { border-color: #fcd68a !important; }
+@media (max-width: 700px) {
+    .execution-table, .execution-table tbody, .execution-table tr, .execution-table td { display: block; width: 100%; min-width: 0; box-sizing: border-box; }
+    .execution-table thead { display: none; }
+    .execution-table tr { margin-bottom: 20px; padding: 8px; border: 1px solid var(--borde); border-radius: 8px; }
+    .execution-table td { border: 0; }
+    .execution-table td::before { content: attr(data-label); display: block; color: var(--secundario); }
+    .execution-table input, .execution-table input[type="datetime-local"] { min-width: 0; }
+    .row-errors { max-width: none; }
+}

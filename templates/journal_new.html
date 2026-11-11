@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block titulo %}New Trade{% endblock %}
+{% block contenido %}
+<header class="bienvenida">
+    <p class="etiqueta">Registro manual</p>
+    <h1>New Trade</h1>
+    <p class="introduccion">Registra una entrada inicial o una operación histórica completa.</p>
+</header>
+{% if error %}<p role="alert" class="account-message advertencia">{{ error }}</p>
+{% elif not accounts %}<p class="account-message">Necesitas una cuenta activa. <a href="{{ url_for('accounts') }}">Crear o reactivar una cuenta</a>.</p>
+{% else %}
+<noscript><p>Esta tabla requiere JavaScript para previsualizar y guardar. Los cálculos se realizan en el servidor.</p></noscript>
+<form id="trade-form" data-preview="{{ url_for('journal_preview') }}" data-create="{{ url_for('journal_create') }}">
+    <input type="hidden" id="trade-csrf" value="{{ csrf }}">
+    <fieldset id="draft-fields" class="dashboard account-panel">
+        <legend>Datos generales</legend>
+        <div class="campos">
+            <label>Cuenta activa <select name="account_id" required>
+                {% for account in accounts %}<option value="{{ account.id }}" {% if account.id == selected %}selected{% endif %}>{{ account.name }} ({{ account.account_type }})</option>{% endfor %}
+            </select></label>
+            <label>Instrumento <select name="symbol" required>{% for symbol, spec in contracts.items() %}<option value="{{ symbol }}" data-tick="{{ spec.tick_size }}">{{ symbol }}</option>{% endfor %}</select></label>
+            <label>Dirección <select name="direction"><option value="long">Long</option><option value="short">Short</option></select></label>
+            <label>Estrategia (opcional) <input name="strategy" maxlength="200"></label>
+            <label class="full-width">Notas (opcional) <textarea name="notes" rows="3" maxlength="10000"></textarea></label>
+            <label>Modalidad <select name="mode"><option value="progressive">Progresiva: una entrada</option><option value="historical">Histórica: múltiples ejecuciones</option></select></label>
+            <label>Offset UTC de las horas introducidas <select name="offset">
+                <option value="-04:00">UTC−04:00 (Santo Domingo)</option>
+                <option value="+00:00">UTC+00:00</option>
+                {% for hour in range(-12, 15) %}{% if hour not in [-4, 0] %}<option value="{{ '%+03d:00'|format(hour) }}">UTC{{ '%+03d:00'|format(hour) }}</option>{% endif %}{% endfor %}
+                <option value="custom">Otro offset…</option>
+            </select></label>
+            <label id="custom-offset-field" hidden>Offset explícito (±HH:MM) <input name="custom_offset" placeholder="+05:30" pattern="[+-][0-9]{2}:[0-9]{2}" maxlength="6"></label>
+        </div>
+        <p class="ayuda">Todas las filas usan el offset elegido, no la zona del navegador. Es un desplazamiento fijo: si tu historial cruza un cambio de horario estacional, convierte las horas a UTC y selecciona UTC+00:00.</p>
+        <h2>Ejecuciones del borrador</h2>
+        <p class="ayuda">Comisión y cargos son el total de cada ejecución, no importes por contrato. Máximo 200 filas. ↑ y ↓ fijan el orden de desempate para horas iguales.</p>
+        <div class="execution-table-wrap">
+            <table class="execution-table">
+                <thead><tr><th>Fila / orden</th><th>Tipo</th><th>Fecha y hora</th><th>Contratos</th><th>Precio</th><th>Comisión USD</th><th>Cargos USD</th><th>Acciones</th></tr></thead>
+                <tbody id="execution-rows"></tbody>
+            </table>
+        </div>
+        <button type="button" id="add-execution" hidden>Add Execution</button>
+        <button type="submit" id="preview-trade">Previsualizar</button>
+    </fieldset>
+    <div id="trade-errors" role="alert" aria-live="polite"></div>
+    <p id="trade-message" role="status" aria-live="polite"></p>
+    <section id="trade-preview" class="dashboard account-panel" hidden aria-labelledby="preview-title">
+        <h2 id="preview-title">Resumen realizado</h2>
+        <dl id="trade-summary" class="resultados-grid"></dl>
+        <p class="ayuda">El neto acumulado descuenta los costos ya incurridos. Si quedan contratos abiertos, no es el resultado final. No incluye P&amp;L no realizado ni slippage estimado adicional.</p>
+        <h3>Orden que se guardará (UTC)</h3>
+        <ol id="effective-order"></ol>
+        <label><input type="checkbox" id="confirm-trade"> Confirmo los datos y el orden mostrado.</label>
+        <button type="button" id="save-trade" disabled>Guardar operación</button>
+    </section>
+</form>
+<section id="trade-saved" class="dashboard account-panel" hidden tabindex="-1">
+    <h2>Operación guardada</h2><p id="saved-result" role="status"></p>
+    <p>La gestión de ejecuciones posteriores estará disponible en una próxima fase.</p>
+    <a href="{{ url_for('journal_new') }}">Registrar otra operación</a> · <a href="{{ url_for('journal') }}">Volver al Journal</a>
+</section>
+<template id="execution-template">
+    <tr>
+        <td data-label="Fila / orden"><span class="row-number"></span><div class="row-errors advertencia" role="status"></div></td>
+        <td data-label="Tipo"><select data-field="execution_type" aria-label="Tipo de ejecución"><option value="entry">Entrada</option><option value="exit">Salida</option></select></td>
+        <td data-label="Fecha y hora"><input data-field="executed_at" aria-label="Fecha y hora" type="datetime-local" step="0.000001" required></td>
+        <td data-label="Contratos"><input data-field="quantity" aria-label="Contratos" type="number" min="1" max="1000000000" step="1" required value="1"></td>
+        <td data-label="Precio"><input data-field="price" aria-label="Precio" type="number" min="0.25" max="1000000000" step="0.25" required></td>
+        <td data-label="Comisión USD"><input data-field="commission" aria-label="Comisión total" type="number" min="0" max="1000000000" step="0.000001" required value="0"></td>
+        <td data-label="Cargos USD"><input data-field="fees" aria-label="Otros cargos totales" type="number" min="0" max="1000000000" step="0.000001" required value="0"></td>
+        <td data-label="Acciones" class="row-actions"><button type="button" data-action="up" aria-label="Subir fila">↑</button><button type="button" data-action="down" aria-label="Bajar fila">↓</button><button type="button" data-action="remove">Eliminar</button></td>
+    </tr>
+</template>
+<script src="{{ url_for('static', filename='journal.js') }}" defer></script>
+{% endif %}
+{% endblock %}
