@@ -336,3 +336,21 @@ dd {
         grid-template-columns: minmax(0, 1fr);
     }
 }
+
+/* Gestión de cuentas: formularios tradicionales sin dependencia de JavaScript. */
+.account-panel { padding: 24px; margin-bottom: 20px; overflow-wrap: anywhere; }
+.account-list { margin-top: 28px; }
+.account-actions { display: flex; flex-wrap: wrap; gap: 20px; align-items: start; }
+.account-actions details { flex: 1 1 240px; }
+.account-actions summary { cursor: pointer; padding: 10px; }
+.account-actions details button { margin-top: 12px; }
+.account-message { padding: 16px; border: 1px solid var(--borde); border-radius: 8px; }
+.account-archived { border-style: dashed; }
+.account-panel input[type="hidden"] { display: none; }
+.account-panel .estado { display: inline-block; }
+summary:focus-visible { outline: 3px solid var(--acento); outline-offset: 4px; }
+@media (max-width: 600px) {
+    .account-panel { padding: 18px; }
+    .account-actions { flex-direction: column; }
+    .account-actions details { flex-basis: auto; width: 100%; }
+}

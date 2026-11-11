@@ -21,18 +21,18 @@ class DatabaseTests(unittest.TestCase):
         initialize(self.path)
         verify(self.connection)
         self.assertEqual(self.connection.execute('PRAGMA foreign_keys').fetchone()[0], 1)
-        self.assertEqual(self.connection.execute('PRAGMA user_version').fetchone()[0], 1)
+        self.assertEqual(self.connection.execute('PRAGMA user_version').fetchone()[0], 2)
         if sqlite3.sqlite_version_info >= (3, 37, 0):
             rows = self.connection.execute('PRAGMA table_list').fetchall()
             self.assertTrue(all(row['strict'] for row in rows if row['name'] in ('accounts', 'trades', 'executions')))
-        self.connection.execute('PRAGMA user_version=2')
+        self.connection.execute('PRAGMA user_version=99')
         with self.assertRaises(DatabaseError):
             initialize(self.path)
 
     def test_restrict_checks_and_rollback(self):
         c = self.connection
         c.execute("INSERT INTO accounts VALUES(1,'A','personal',NULL,'2026-01-01T00:00:00.000000Z',1)")
-        c.execute("INSERT INTO trades VALUES(1,1,'MNQ','long',NULL,NULL,'2026-01-01T00:00:00.000000Z')")
+        c.execute("INSERT INTO trades(id,account_id,symbol,direction,strategy,notes,created_at) VALUES(1,1,'MNQ','long',NULL,NULL,'2026-01-01T00:00:00.000000Z')")
         with self.assertRaises(sqlite3.IntegrityError):
             c.execute('DELETE FROM accounts WHERE id=1')
         for statement in ["UPDATE accounts SET account_type='other'", "UPDATE trades SET account_id=99", "UPDATE trades SET symbol='ABC'"]:

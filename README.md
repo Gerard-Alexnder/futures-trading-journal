@@ -2,9 +2,9 @@
 
 Aplicación web personal para organizar operaciones de futuros y, en fases posteriores, gestionar riesgo y analizar estadísticas de trading.
 
-## Estado actual: Fase 3A
+## Estado actual: Fase 3B.1
 
-Servidor Flask con navegación compartida, diseño oscuro adaptable y calculadora de riesgo funcional en `/calculator`. Las otras cinco páginas siguen siendo provisionales. Existe un servicio Python de cuentas y operaciones con SQLite, todavía sin integración con las páginas. No hay envío de órdenes, conexión a brokers ni autenticación.
+Servidor Flask con navegación compartida, diseño oscuro adaptable y calculadora de riesgo funcional en `/calculator`. Accounts permite gestionar cuentas; Dashboard, Journal, Calendar y Settings siguen siendo provisionales. Existe un servicio Python de cuentas y operaciones con SQLite, integrado con Accounts. No hay envío de órdenes, conexión a brokers ni autenticación.
 
 ## Tecnologías
 
@@ -313,3 +313,69 @@ uv run --no-sync python -W error::ResourceWarning -m unittest discover -s tests 
 ```
 
 Las pruebas crean bases reales mediante `TemporaryDirectory`, incluyendo verificaciones CLI y dos conexiones concurrentes. Cubren ejemplos Long/Short, entradas múltiples, cierres parciales, costos, precisión, timestamps empatados e históricos, cuentas archivadas, aislamiento, restricciones SQL, deduplicación, rollback, reversiones, persistencia y regresión completa de calculadora/rutas. No inicializan ni modifican la base personal. No se añadieron dependencias, formularios, importadores ni endpoints.
+
+## Fase 3B.1: Accounts y esquema v2
+
+Accounts ahora permite crear, listar, seleccionar, archivar y reactivar cuentas. El formulario mantiene nombre/plataforma ante errores y escapa contenido. El archivo requiere abrir la confirmación y marcar la casilla. Las cuentas archivadas conservan todos sus datos. La selección es una preferencia de sesión, distinta de `is_active`; se invalida al archivar desde esta sesión o al volver a Accounts si otra sesión archivó la cuenta. El enlace Journal sigue llevando a una página provisional, sin historial filtrado.
+
+### Configuración web
+
+Define `SECRET_KEY` mediante una variable de entorno o el gestor de secretos del despliegue. Utiliza un valor aleatorio persistente de al menos 32 bytes. Puedes generar uno localmente con `uv run --no-sync python -c 'import secrets; print(secrets.token_hex(32))'` y guardarlo de forma privada; no lo publiques ni lo añadas a Git. No hay carga automática de `.env` ni claves predeterminadas o efímeras. Cambiar la clave invalida las sesiones anteriores.
+
+Sin `SECRET_KEY`, Accounts responde 503 con instrucciones; las páginas existentes y la calculadora siguen disponibles. Las cookies de sesión tienen `HttpOnly` y `SameSite=Lax`. Define `SESSION_COOKIE_SECURE=true` para HTTPS (en HTTP local debe permanecer desactivado). No se establece duración permanente: la cookie dura la sesión del navegador, sujeta a la restauración de sesiones propia del navegador. La sesión contiene token CSRF, ID de cuenta seleccionada y mensajes de interfaz; no importes financieros. Las cookies firmadas no son cifradas.
+
+`JOURNAL_DATABASE` permite configurar una ruta diferente; por defecto se usa `instance/journal.sqlite3`. No se crea ni migra la base al arrancar Flask ni al recibir HTTP. Las conexiones ordinarias requieren que el archivo exista y que el esquema sea v2. Si falta o es v1, Accounts muestra el comando administrativo requerido. Usa `--path` en los comandos si configuraste una ruta distinta.
+
+Cada POST nuevo valida CSRF asociado a sesión desde campo oculto o cabecera `X-CSRF-Token`; los tokens no aparecen en URLs. La API `/api/calculate-risk` conserva su comportamiento, porque no persiste datos. Los formularios limitan su cuerpo a 16 KiB. Se distinguen validación (422), inexistentes (404), cuenta archivada/conflicto (409), CSRF (403), tamaño (413) y configuración/persistencia no disponible (503), sin mostrar detalles internos SQLite.
+
+### Administración de la base
+
+Para una **base nueva**:
+
+```bash
+uv run --no-sync python -m database init
+uv run --no-sync python -m database verify
+```
+
+Para una **base existente v1**, detener primero la aplicación y ejecutar explícitamente:
+
+```bash
+uv run --no-sync python -m database migrate
+uv run --no-sync python -m database verify
+```
+
+Estos comandos administrativos no se ejecutan automáticamente. Durante el desarrollo y las pruebas de esta fase no se migró ni modificó la base personal.
+
+`initialize()` crea v2 y verifica v2 existente; rechaza v1 sin migrarla. `verify()` verifica v2 por defecto; el verificador interno admite v1 explícitamente para respaldos/migraciones. `migrate()` admite v1→v2 o v2 sin cambios; rechaza ausencia, versión 0 y versiones desconocidas/futuras. El comando `verify` abre solo lectura.
+
+La migración obtiene una reserva `BEGIN IMMEDIATE`, valida el origen y realiza un respaldo consistente mediante la API SQLite desde una segunda conexión lectora. Se mantiene bloqueada la escritura hasta terminar, para que el respaldo corresponda al estado previo. El respaldo queda junto a la base con nombre `journal.sqlite3.<UTC>.<UUID>.bak` y permisos iniciales 0600. La CLI informa su ruta y la versión final. Repetir sobre v2 no crea otro respaldo. En caso de fallo después del respaldo, los cambios se revierten y el respaldo permanece disponible en ese directorio. Respalda también tu configuración por separado; las copias SQLite contienen datos personales. Para restaurar, detener todos los procesos y usar la copia consistente, evitando archivos WAL/SHM de otra versión. No hay restauración automática ni migración inversa.
+
+La versión 2 conserva las tres tablas financieras, IDs, timestamps, restricciones e índices, y añade:
+
+- `trades.revision INTEGER NOT NULL DEFAULT 0 CHECK(typeof(revision)='integer' AND revision >= 0)` mediante `ALTER TABLE ADD COLUMN`, sin reconstrucción de trades. Es infraestructura reservada; el control optimista y actualización de revisiones de operaciones se implementarán en fases posteriores.
+- `write_requests`: `request_key TEXT PRIMARY KEY NOT NULL` (16–128 caracteres), `action TEXT NOT NULL` (1–100), `payload_hash TEXT NOT NULL` (64), `result_json TEXT NOT NULL` y `created_at TEXT NOT NULL`. Índice por `created_at`; tabla STRICT donde está disponible.
+
+El verificador comprueba columnas requeridas, índices principales, presencia de FK, versión e integridad. No es un certificador de equivalencia de todo DDL arbitrariamente modificado; las escrituras SQL externas no son una interfaz soportada. Los precios y costos siguen siendo enteros y el motor financiero no cambió.
+
+### Idempotencia y servicios
+
+`idempotency.execute_once(connection, request_key, action, payload, operation)` se utiliza dentro de la transacción de negocio. El payload debe estar normalizado; se almacena SHA-256 del JSON canónico, no el payload. La operación devuelve únicamente IDs/estados no sensibles. Claves manuales aleatorias (16–128 caracteres ASCII permitidos) son independientes de identificadores externos de ejecuciones. No usar números float ni secretos en payloads futuros.
+
+Misma clave/acción/contenido devuelve el resultado confirmado sin volver a escribir; contenido o acción distintos generan conflicto. Las peticiones concurrentes se serializan con `BEGIN IMMEDIATE`. Si falla el efecto o su registro idempotente, el llamador propaga el error y revierte ambos. No hay limpieza automática de claves; eliminarlas podría permitir repeticiones antiguas. Una repetición confirma el resultado original, no fuerza de nuevo el estado actual si después hubo otra acción legítima.
+
+`TradeService.create_account(..., request_id=None)` y `set_account_active(..., request_id=None)` aceptan la clave opcional para compatibilidad con consumidores Python de Fase 3A. La web la exige siempre. `get_account(account_id, require_active=False)` expone consulta individual y validación de selección. Crear normaliza nombre y plataforma con el servicio; la web transforma plataforma vacía en NULL.
+
+Seleccionar no usa `write_requests`: solo asigna un ID a la sesión después de validar que la cuenta exista y esté habilitada. Repetir esa asignación tiene el mismo resultado y no crea filas. Toda selección requiere CSRF. Crear/archivar/reactivar usan idempotencia y redirección 303; no dependen de JavaScript para evitar duplicación.
+
+Rutas nuevas/activadas: GET/POST `/accounts` y POST `/accounts/<id>/select`, `/archive`, `/reactivate`. No hay eliminación ni edición de datos generales. `account_routes.py` no contiene SQL de negocio; `web_support.py` configura sesiones y CSRF.
+
+### Pruebas y límites
+
+```bash
+uv run --no-sync python -W error::ResourceWarning -m unittest discover -s tests -v
+git diff --check
+```
+
+Las pruebas usan exclusivamente bases temporales. `tests/fixtures/schema_v1.sql` conserva el esquema original de Fase 3A, sin datos personales, para probar migraciones reales. Los tests previos de rutas ahora configuran SECRET_KEY de prueba y base temporal; los tests previos de base esperan v2 y conservan verificaciones de rechazo de versiones futuras. No se eliminaron pruebas.
+
+El diseño CSS contempla móvil y escritorio, pero las pruebas Flask no sustituyen una revisión visual/manual de navegador. La aplicación sigue siendo personal y sin autenticación; no debe exponerse públicamente como si CSRF aportara control de acceso. Siguen pendientes formularios de operaciones, historial funcional, correcciones auditables, importaciones, control de revisión en escrituras de operaciones y reglas avanzadas de cuentas fondeadas. La descripción histórica de esquema v1 anterior se conserva como referencia; v2 es la versión actual requerida.

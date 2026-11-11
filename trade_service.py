@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import sqlite3
 
 from contracts import CONTRACTS
+from idempotency import ConflictError, execute_once
 from database import DEFAULT_PATH, connect, transaction, SCHEMA_VERSION, DatabaseError
 from trade_calculations import (
     TradeValidationError, calculate_trade, integer, money_units, price_units,
@@ -15,10 +16,6 @@ class NotFoundError(TradeValidationError):
 
 
 class ArchivedAccountError(TradeValidationError):
-    pass
-
-
-class ConflictError(TradeValidationError):
     pass
 
 
@@ -60,7 +57,7 @@ class TradeService:
         try:
             connection = connect(self.path)
             if connection.execute('PRAGMA user_version').fetchone()[0] != SCHEMA_VERSION:
-                raise DatabaseError('Inicializa la base antes de utilizar el servicio.')
+                raise DatabaseError('Base incompatible. Para v1 ejecuta uv run --no-sync python -m database migrate; para versiones futuras utiliza una aplicación compatible.')
             if write:
                 with transaction(connection):
                     yield connection
@@ -103,26 +100,42 @@ class TradeService:
         # La restricción de añadir a un trade cerrado pertenece al comando de alta.
         return calculate_trade(trade['symbol'], trade['direction'], candidate_history)
 
-    def create_account(self, name, account_type, platform=None):
+    def create_account(self, name, account_type, platform=None, *, request_id=None):
         name = text_field(name, 'name')
         platform = text_field(platform, 'platform', optional=True)
         if account_type not in ('funded', 'personal'):
             raise TradeValidationError('Tipo de cuenta inválido.')
         with self._connection(write=True) as connection:
-            return connection.execute(
-                'INSERT INTO accounts(name,account_type,platform,created_at) VALUES(?,?,?,?)',
-                (name, account_type, platform, timestamp())).lastrowid
+            def create():
+                return connection.execute(
+                    'INSERT INTO accounts(name,account_type,platform,created_at) VALUES(?,?,?,?)',
+                    (name, account_type, platform, timestamp())).lastrowid
+            if request_id is None:
+                return create()
+            return execute_once(connection, request_id, 'create_account',
+                                dict(name=name, account_type=account_type, platform=platform), create)
+
+    def get_account(self, account_id, *, require_active=False):
+        with self._connection() as connection:
+            return self._account(connection, account_id, writable=require_active)
 
     def list_accounts(self):
         with self._connection() as connection:
             return [dict(row) for row in connection.execute('SELECT * FROM accounts ORDER BY id')]
 
-    def set_account_active(self, account_id, active):
+    def set_account_active(self, account_id, active, *, request_id=None):
         if type(active) is not bool:
             raise TradeValidationError('active debe ser booleano.')
         with self._connection(write=True) as connection:
             self._account(connection, account_id)
-            connection.execute('UPDATE accounts SET is_active=? WHERE id=?', (int(active), account_id))
+            def change():
+                connection.execute('UPDATE accounts SET is_active=? WHERE id=?', (int(active), account_id))
+                return {'account_id': account_id, 'active': active}
+            if request_id is None:
+                change()
+            else:
+                execute_once(connection, request_id, 'set_account_active',
+                             dict(account_id=account_id, active=active), change)
 
     def create_trade(self, account_id, symbol, direction, strategy=None, notes=None):
         with self._connection(write=True) as connection:

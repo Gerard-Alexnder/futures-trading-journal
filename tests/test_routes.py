@@ -1,5 +1,8 @@
 import json
 import unittest
+import tempfile
+from pathlib import Path
+from database import initialize
 from decimal import Decimal
 
 from app import app
@@ -8,7 +11,13 @@ from test_calculations import inputs
 
 class RouteTests(unittest.TestCase):
     def setUp(self):
-        app.config['TESTING'] = True
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        path = Path(directory.name) / 'routes.sqlite3'
+        initialize(path)
+        old = dict(app.config)
+        self.addCleanup(lambda: app.config.update(old))
+        app.config.update(TESTING=True, SECRET_KEY='test-only-session-key', DATABASE=str(path))
         self.client = app.test_client()
 
     def test_existing_pages_and_assets(self):

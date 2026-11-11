@@ -6,7 +6,12 @@ from werkzeug.exceptions import BadRequest, RequestEntityTooLarge
 from calculations import ValidationError, calculate_risk
 from contracts import CONTRACTS
 
+from web_support import configure_web
+from account_routes import register_account_routes
+
 app = Flask(__name__)
+configure_web(app)
+register_account_routes(app)
 
 
 @app.route("/")
@@ -27,11 +32,6 @@ def calendar():
 @app.route("/calculator")
 def calculator():
     return render_template("calculator.html", contracts=CONTRACTS)
-
-
-@app.route("/accounts")
-def accounts():
-    return render_template("accounts.html")
 
 
 @app.route("/settings")

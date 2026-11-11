@@ -1,22 +1,65 @@
 {% extends "base.html" %}
-
 {% block titulo %}Accounts{% endblock %}
-
 {% block contenido %}
 <header class="bienvenida">
     <p class="etiqueta">Tu espacio de trading</p>
     <h1>Accounts</h1>
-    <p class="introduccion">Una vista organizada de tus cuentas de trading.</p>
+    <p class="introduccion">Administra tus cuentas y selecciona la que deseas utilizar.</p>
+    <a href="{{ url_for('journal') }}">Ir al Journal</a>
+    <p class="ayuda">El historial de operaciones estará disponible en una próxima fase.</p>
 </header>
-
-<section class="dashboard" aria-labelledby="seccion-titulo">
-    <div class="dashboard-encabezado">
-        <h2 id="seccion-titulo">Tus cuentas en un solo lugar</h2>
-        <span class="estado">En preparación</span>
-    </div>
-    <div class="estado-vacio">
-        <span class="indicador" aria-hidden="true"></span>
-        <p>En una próxima fase podrás registrar tus cuentas y consultar la información asociada a cada una.</p>
-    </div>
+{% for category, message in get_flashed_messages(with_categories=true) %}
+<p class="account-message" role="status">{{ message }}</p>
+{% endfor %}
+{% if error %}<p class="account-message advertencia" role="alert">{{ error }}</p>{% endif %}
+{% if available %}
+<section class="dashboard account-panel" aria-labelledby="create-heading">
+    <h2 id="create-heading">Crear cuenta</h2>
+    <form method="post" action="{{ url_for('accounts') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf }}">
+        <input type="hidden" name="request_id" value="{{ values.get('request_id') or new_key() }}">
+        <div class="campos">
+            <label>Nombre <input name="name" required maxlength="200" value="{{ values.get('name', '') }}" autocomplete="off"></label>
+            <label>Tipo <select name="account_type" required>
+                <option value="personal" {% if values.get('account_type') == 'personal' %}selected{% endif %}>Personal</option>
+                <option value="funded" {% if values.get('account_type') == 'funded' %}selected{% endif %}>Funded</option>
+            </select></label>
+            <label>Plataforma (opcional) <input name="platform" maxlength="200" value="{{ values.get('platform', '') }}"></label>
+        </div>
+        <button type="submit">Crear cuenta</button>
+    </form>
 </section>
+<section class="account-list" aria-label="Cuentas">
+{% for account in accounts %}
+<article class="dashboard account-panel {% if not account.is_active %}account-archived{% endif %}">
+    <h2>{{ account.name }}</h2>
+    <p>{{ 'Personal' if account.account_type == 'personal' else 'Funded' }} · {{ account.platform or 'Sin plataforma' }}</p>
+    <p class="estado">{{ 'Activa' if account.is_active else 'Archivada' }}{% if selected == account.id %} · Seleccionada{% endif %}</p>
+    <div class="account-actions">
+    {% if account.is_active %}
+        <form method="post" action="{{ url_for('account_select', account_id=account.id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf }}">
+            <button type="submit" {% if selected == account.id %}disabled{% endif %}>Seleccionar</button>
+        </form>
+        <details><summary>Archivar cuenta</summary>
+            <form method="post" action="{{ url_for('account_archive', account_id=account.id) }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf }}">
+                <input type="hidden" name="request_id" value="{{ new_key() }}">
+                <p>Se conservará el historial. La cuenta quedará de solo lectura.</p>
+                <label><input type="checkbox" name="confirm" value="yes" required> Confirmo archivar esta cuenta</label>
+                <button type="submit">Confirmar archivo</button>
+            </form>
+        </details>
+    {% else %}
+        <form method="post" action="{{ url_for('account_reactivate', account_id=account.id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf }}">
+            <input type="hidden" name="request_id" value="{{ new_key() }}">
+            <button type="submit">Reactivar</button>
+        </form>
+    {% endif %}
+    </div>
+</article>
+{% else %}<p class="estado-vacio">No hay cuentas registradas. Crea tu primera cuenta.</p>{% endfor %}
+</section>
+{% endif %}
 {% endblock %}
