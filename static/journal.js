@@ -227,6 +227,7 @@
             }
             uncertain = false; saved = true; form.hidden = true;
             document.querySelector('#saved-result').textContent = `Operación #${data.result.trade_id} registrada correctamente.`;
+            document.querySelector('#saved-detail').href = `/journal/${data.result.trade_id}`;
             const confirmation = document.querySelector('#trade-saved'); confirmation.hidden = false; confirmation.focus();
         } catch (error) {
             uncertain = true;

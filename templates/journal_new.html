@@ -57,7 +57,7 @@
 </form>
 <section id="trade-saved" class="dashboard account-panel" hidden tabindex="-1">
     <h2>Operación guardada</h2><p id="saved-result" role="status"></p>
-    <p>La gestión de ejecuciones posteriores estará disponible en una próxima fase.</p>
+    <p><a id="saved-detail" href="{{ url_for('journal') }}">Ver operación y gestionar posición</a></p>
     <a href="{{ url_for('journal_new') }}">Registrar otra operación</a> · <a href="{{ url_for('journal') }}">Volver al Journal</a>
 </section>
 <template id="execution-template">

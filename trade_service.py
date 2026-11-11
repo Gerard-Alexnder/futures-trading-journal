@@ -21,6 +21,14 @@ class ArchivedAccountError(TradeValidationError):
     pass
 
 
+class StaleRevisionError(ConflictError):
+    pass
+
+
+class TradeClosedError(ConflictError):
+    pass
+
+
 class DraftValidationError(TradeValidationError):
     """Errores estructurados: campos generales y filas identificadas por row_id."""
     def __init__(self, errors):
@@ -79,6 +87,32 @@ class TradeService:
         finally:
             if connection is not None:
                 connection.close()
+
+    @contextmanager
+    def _snapshot(self):
+        """Una transacción de lectura: revisión, cuenta e historia del mismo instante."""
+        with self._connection() as connection:
+            connection.execute('PRAGMA query_only=ON')
+            connection.execute('BEGIN')
+            try:
+                yield connection
+            finally:
+                if connection.in_transaction:
+                    connection.execute('ROLLBACK')
+
+    @staticmethod
+    def _validate_revision(revision):
+        if type(revision) is not int or not 0 <= revision < 9223372036854775807:
+            raise DraftValidationError({'fields': {'expected_revision': 'Revisión entera no negativa requerida.'}, 'rows': {}})
+
+    @staticmethod
+    def _bump_revision(connection, trade_id, expected_revision):
+        TradeService._validate_revision(expected_revision)
+        cursor = connection.execute('UPDATE trades SET revision=revision+1 WHERE id=? AND revision=?',
+                                    (trade_id, expected_revision))
+        if cursor.rowcount != 1:
+            raise StaleRevisionError('La posición cambió. Actualízala y vuelve a previsualizar.')
+        return expected_revision + 1
 
     @staticmethod
     def _account(connection, account_id, writable=False):
@@ -167,12 +201,15 @@ class TradeService:
             trade = self._trade(connection, trade_id)
             self._account(connection, trade['account_id'], writable=True)
             connection.execute('UPDATE trades SET strategy=?, notes=? WHERE id=?', (strategy, notes, trade_id))
+            self._bump_revision(connection, trade_id, trade['revision'])
 
     def get_trade(self, trade_id):
-        with self._connection() as connection:
+        with self._snapshot() as connection:
             trade = self._trade(connection, trade_id)
+            account = self._account(connection, trade['account_id'])
             executions = self._executions(connection, trade_id)
-            return {**trade, 'executions': executions, 'summary': self._revalidate(trade, executions)}
+            return {**trade, 'account': account, 'executions': self._display_executions(trade['symbol'], executions),
+                    'summary': self._revalidate(trade, executions)}
 
     def list_trades(self, account_id):
         with self._connection() as connection:
@@ -187,7 +224,7 @@ class TradeService:
         with self._connection(write=True) as connection:
             return self._add_executions(connection, trade_id, executions)
 
-    def _add_executions(self, connection, trade_id, executions):
+    def _add_executions(self, connection, trade_id, executions, *, bump_revision=True):
         trade = self._trade(connection, trade_id)
         self._account(connection, trade['account_id'], writable=True)
         history = self._executions(connection, trade_id)
@@ -225,7 +262,10 @@ class TradeService:
                 external_execution_id=external_id, external_namespace=namespace, created_at=timestamp(),
             ))
         self._revalidate(trade, history + candidates)
-        return self._insert_executions(connection, candidates)
+        ids = self._insert_executions(connection, candidates)
+        if bump_revision:
+            self._bump_revision(connection, trade_id, trade['revision'])
+        return ids
 
     @staticmethod
     def _insert_executions(connection, rows):
@@ -263,6 +303,15 @@ class TradeService:
         if mode == 'progressive' and (len(executions) != 1 or not isinstance(executions[0], dict)
                                       or executions[0].get('execution_type') != 'entry'):
             raise DraftValidationError({'fields': {'mode': 'El registro progresivo requiere exactamente una entrada.'}, 'rows': {}})
+        normalized = TradeService._normalize_execution_rows(symbol, executions)
+        return dict(account_id=account_id, symbol=symbol, direction=direction,
+                    strategy=strategy, notes=notes, mode=mode, executions=normalized)
+
+    @staticmethod
+    def _normalize_execution_rows(symbol, executions):
+        if not isinstance(executions, list) or not 1 <= len(executions) <= 200:
+            raise DraftValidationError({'fields': {'executions': 'Incluye entre 1 y 200 ejecuciones.'}, 'rows': {}})
+        errors = {'fields': {}, 'rows': {}}
         normalized = []
         identities = set()
         allowed = {'row_id', 'executed_at', 'execution_type', 'quantity', 'price', 'commission', 'fees'}
@@ -310,8 +359,7 @@ class TradeService:
             normalized.append(row)
         if errors['fields'] or errors['rows']:
             raise DraftValidationError(errors)
-        return dict(account_id=account_id, symbol=symbol, direction=direction,
-                    strategy=strategy, notes=notes, mode=mode, executions=normalized)
+        return normalized
 
     def _preview_normalized(self, draft):
         ordered = sorted(draft['executions'], key=lambda row: (row['executed_at'], row['sequence']))
@@ -322,15 +370,18 @@ class TradeService:
             except TradeValidationError as error:
                 raise DraftValidationError({'fields': {}, 'rows': {
                     row['row_id']: {'history': str(error)}}}) from error
-        # Conversión de unidades para mostrar los fills, sin otra implementación financiera.
+        return {'summary': summary, 'executions': self._display_executions(draft['symbol'], ordered)}
+
+    @staticmethod
+    def _display_executions(symbol, rows):
+        # Conversión de unidades para presentación; no duplica el motor financiero.
         with localcontext() as context:
             context.prec = 50
-            displayed = [{**row,
-                          'price': format(Decimal(row['price_ticks']) * CONTRACTS[draft['symbol']]['tick_size'], 'f'),
-                          'commission': format(Decimal(row['commission_microusd']) / 1_000_000, 'f'),
-                          'fees': format(Decimal(row['fees_microusd']) / 1_000_000, 'f')}
-                         for row in ordered]
-        return {'summary': summary, 'executions': displayed}
+            return [{**row,
+                     'price': format(Decimal(row['price_ticks']) * CONTRACTS[symbol]['tick_size'], 'f'),
+                     'commission': format(Decimal(row['commission_microusd']) / 1_000_000, 'f'),
+                     'fees': format(Decimal(row['fees_microusd']) / 1_000_000, 'f')}
+                    for row in rows]
 
     def preview_trade(self, account_id, symbol, direction, executions, strategy=None, notes=None, *, mode='historical'):
         draft = self._normalize_draft(account_id, symbol, direction, executions, strategy, notes, mode)
@@ -364,6 +415,76 @@ class TradeService:
 
             return execute_once(connection, request_id, 'create_trade_with_executions', canonical, create)
 
+    def _preview_batch(self, trade, history, normalized, expected_revision):
+        if trade['revision'] != expected_revision:
+            raise StaleRevisionError('La posición cambió. Actualízala y vuelve a previsualizar.')
+        current = self._revalidate(trade, history)
+        if current['status'] == 'closed':
+            raise TradeClosedError('La operación está cerrada; no admite nuevas ejecuciones.')
+        maximum = max((row['sequence'] for row in history), default=0)
+        candidates = [{**row, 'sequence': integer(maximum + index, 'sequence')}
+                      for index, row in enumerate(normalized, 1)]
+        combined = sorted([*history, *candidates], key=lambda row: (row['executed_at'], row['sequence']))
+        try:
+            projected = self._revalidate(trade, combined)
+        except TradeValidationError as error:
+            # Solo localizar por prefijos cuando el replay completo falla.
+            for index, row in enumerate(combined, 1):
+                try:
+                    self._revalidate(trade, combined[:index])
+                except TradeValidationError as located:
+                    if 'row_id' in row:
+                        details = {'fields': {}, 'rows': {row['row_id']: {'history': str(located)}}}
+                    else:
+                        details = {'fields': {'executions': f"El lote invalida la ejecución existente #{row['id']}: {located}"},
+                                   'rows': {item['row_id']: {'history': 'Revisa la inserción retroactiva y la historia combinada.'}
+                                            for item in candidates}}
+                    raise DraftValidationError(details) from located
+            raise error
+        retroactive = bool(history) and any(row['executed_at'] < max(h['executed_at'] for h in history) for row in candidates)
+        return {'trade_id': trade['id'], 'revision': trade['revision'], 'current': current, 'projected': projected,
+                'executions': self._display_executions(trade['symbol'], combined),
+                'new_executions': self._display_executions(trade['symbol'], candidates),
+                'retroactive': retroactive,
+                'warning': ('Inserción retroactiva: se recalculará toda la operación, incluido el P&L de salidas posteriores ya registradas. No se modifican sus ejecuciones originales.'
+                            if retroactive else None)}
+
+    def preview_execution_batch(self, trade_id, executions, *, expected_revision):
+        self._validate_revision(expected_revision)
+        with self._snapshot() as connection:
+            trade = self._trade(connection, trade_id)
+            self._account(connection, trade['account_id'], writable=True)
+            normalized = self._normalize_execution_rows(trade['symbol'], executions)
+            history = self._executions(connection, trade_id)
+            return self._preview_batch(trade, history, normalized, expected_revision)
+
+    def append_execution_batch(self, trade_id, executions, *, expected_revision, request_id):
+        self._validate_revision(expected_revision)
+        with self._connection(write=True) as connection:
+            trade = self._trade(connection, trade_id)
+            self._account(connection, trade['account_id'], writable=True)
+            normalized = self._normalize_execution_rows(trade['symbol'], executions)
+            # Orden RELATIVO estable: no depende del max(sequence) posterior al commit.
+            canonical = {'trade_id': trade_id, 'expected_revision': expected_revision,
+                         'executions': [{key: value for key, value in row.items() if key != 'row_id'}
+                                        for row in normalized]}
+
+            def append():
+                history = self._executions(connection, trade_id)
+                preview = self._preview_batch(trade, history, normalized, expected_revision)
+                candidates = [{key: value for key, value in row.items()
+                               if key not in ('row_id', 'price', 'commission', 'fees')}
+                              for row in preview['new_executions']]
+                for row in candidates:
+                    row.update(trade_id=trade_id, account_id=trade['account_id'], source='manual',
+                               external_execution_id=None, external_namespace=None, created_at=timestamp())
+                ids = self._insert_executions(connection, candidates)
+                revision = self._bump_revision(connection, trade_id, expected_revision)
+                return {'trade_id': trade_id, 'execution_ids': ids, 'revision': revision}
+
+            # Reintentos confirmados se resuelven antes de comprobar revisión/cierre.
+            return execute_once(connection, request_id, 'append_execution_batch', canonical, append)
+
     def record_reversal(self, trade_id, closing_execution, opening_execution):
         """Registra dos partes explícitas; no reconstruye ni reparte órdenes importadas."""
         with self._connection(write=True) as connection:
@@ -378,5 +499,5 @@ class TradeService:
                 raise TradeValidationError('La reversión debe cerrar completamente la posición original.')
             new_id = self._create_trade(connection, original['account_id'], original['symbol'],
                                         'short' if original['direction'] == 'long' else 'long')
-            self._add_executions(connection, new_id, [opening_execution])
+            self._add_executions(connection, new_id, [opening_execution], bump_revision=False)
             return new_id

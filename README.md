@@ -2,9 +2,9 @@
 
 Aplicación web personal para organizar operaciones de futuros y, en fases posteriores, gestionar riesgo y analizar estadísticas de trading.
 
-## Estado actual: Fase 3B.2
+## Estado actual: Fase 3B.3
 
-Servidor Flask con navegación compartida, diseño oscuro adaptable y calculadora de riesgo funcional en `/calculator`. Accounts permite gestionar cuentas y `/journal/new` registra operaciones manuales. El listado de Journal, Dashboard, Calendar y Settings siguen siendo provisionales. Existe un servicio Python de cuentas y operaciones con SQLite, integrado con Accounts. No hay envío de órdenes, conexión a brokers ni autenticación.
+Servidor Flask con navegación compartida, diseño oscuro adaptable y calculadora de riesgo funcional en `/calculator`. Accounts permite gestionar cuentas y `/journal/new` registra operaciones manuales. `/journal/<id>` muestra el detalle y permite continuar posiciones abiertas mediante entradas, salidas parciales y cierre completo. El listado de Journal, Dashboard, Calendar y Settings siguen siendo provisionales. No hay envío de órdenes, conexión a brokers ni autenticación.
 
 ## Tecnologías
 
@@ -473,7 +473,7 @@ git diff --check
 
 Las pruebas adicionales de `test_trade_drafts.py` y `test_journal_routes.py` utilizan bases temporales: preview sin cambios en el archivo, progresiva/histórica, equivalencia preview/persistencia, Long/Short, múltiples entradas, costos, offsets/empates, campos inválidos, cuentas, límites, rollback en mitad del lote y al registrar la clave, concurrencia, CSRF y regresiones. No se modifican ni relajan las pruebas anteriores.
 
-La interfaz requiere JavaScript; en móvil la tabla se presenta como tarjetas de campos. No se implementan edición, adición de ejecuciones a una operación guardada, historial avanzado, auditoría, importaciones ni reglas de cuentas fondeadas.
+La interfaz requiere JavaScript; en móvil la tabla de creación se presenta como tarjetas de campos. No se implementan edición, historial general, auditoría, importaciones ni reglas de cuentas fondeadas. La continuación de operaciones guardadas se describe en la Fase 3B.3.
 
 Validación optativa de JavaScript en Firefox, con un servidor WebDriver ya disponible (no instala dependencias):
 
@@ -482,3 +482,68 @@ PYTHONPATH=. WEBDRIVER_URL=http://127.0.0.1:4444 uv run --no-sync python tests/b
 ```
 
 El script usa una base temporal y una clave efímera de prueba. Comprueba la cancelación del evento `beforeunload` para distintos campos, cambios revertidos y guardado confirmado; offsets fraccionarios, errores, respuestas tardías y pérdida de respuesta de guardado. Las capturas de escritorio y ancho móvil se guardan en `/tmp/journal-desktop.png` y `/tmp/journal-mobile.png`. No prueba terminación forzada del navegador ni garantiza que el navegador muestre su diálogo nativo en todas las circunstancias.
+
+## Fase 3B.3 — Gestión de posiciones y detalle
+
+Después de crear una operación, el enlace **Ver operación y gestionar posición** abre `/journal/<id>`. También se puede acceder directamente por ID; el listado general sigue fuera de alcance. El detalle muestra cuenta, instrumento, dirección, estrategia, notas, revisión, resumen financiero e historia completa en orden efectivo. Operaciones cerradas y cuentas archivadas son de solo lectura. Una operación pending admite una primera entrada válida.
+
+La interfaz prepara una ejecución por vez: entrada adicional, salida parcial o cierre completo. El cierre completo toma la cantidad abierta mostrada, pero el servidor vuelve a validar cantidad, revisión e historia. El preview compara estado actual y proyectado; guardar exige confirmación. Se actualizan resumen e historial después del recibo confirmado. No hay cálculos financieros en JavaScript. Los importes mostrados son cadenas Decimal del servidor, sin redondeos monetarios intermedios.
+
+### Servicios y protocolo
+
+```python
+service.preview_execution_batch(trade_id, executions, expected_revision=revision)
+service.append_execution_batch(trade_id, executions,
+                               expected_revision=revision, request_id=request_id)
+```
+
+Ambos servicios aceptan entre 1 y 200 filas con el mismo contrato de normalización de 3B.2: `row_id`, `execution_type`, `executed_at` con offset, y cadenas para `quantity`, `price`, `commission`, `fees`. No aceptan secuencias del cliente. La operación determina cuenta, instrumento y dirección. La interfaz envía una fila, mientras el servicio/API admite lotes atómicos.
+
+- GET `/journal/<int:trade_id>`: HTML; con `Accept: application/json`, devuelve el mismo snapshot para actualizar el detalle.
+- POST `/api/journal/<int:trade_id>/executions/preview`: `expected_revision` entero y `executions`; devuelve `current`, `projected`, `revision`, `executions` combinadas, `new_executions`, `retroactive` y `warning`.
+- POST `/api/journal/<int:trade_id>/executions`: mismo cuerpo más `request_id`; devuelve el recibo estable `{trade_id, execution_ids, revision}`.
+
+Ambos POST requieren CSRF y limitan el cuerpo a 512 KiB. Conservan 400/403/404/409/413/422/503; el error JSON incluye `code` con `stale_revision`, `trade_closed`, `account_inactive` o `idempotency_conflict` para esos conflictos, además de `errors.fields` y `errors.rows`. Un error de historia identifica la nueva fila que falla; si una inserción invalida un fill existente, identifica ese fill y señala las filas del lote para revisar. No se revelan trazas ni SQL de fallos de persistencia.
+
+### Snapshot, revisión e idempotencia
+
+Detalle y preview abren una transacción `BEGIN` con `PRAGMA query_only=ON`; operación, revisión, cuenta e historial pertenecen al mismo snapshot establecido por la primera lectura. No usan `BEGIN IMMEDIATE`, no registran solicitudes y no escriben estados ni revisiones. Las pruebas intercalan un escritor real en otra conexión con WAL habilitado **solo en la base temporal**. No se cambia el modo de journal del proyecto. En el modo rollback-journal habitual, una lectura larga puede retrasar el commit de un escritor hasta que termine.
+
+Las escrituras utilizan `BEGIN IMMEDIATE`. Se obtiene la operación y se exige cuenta activa; se normalizan las filas con su instrumento, se construye el contenido canónico y se consulta `write_requests`. La normalización específica del instrumento ocurre dentro de esa transacción para usar la operación leída allí. Solo una solicitud nueva comprueba revisión/estado, reproduce toda la historia candidata, inserta fills, incrementa revisión con un UPDATE condicionado y registra el recibo, todo dentro de una transacción.
+
+El contenido canónico incluye ID de operación, revisión esperada, tipo, timestamps UTC, cantidades, ticks, micro-USD y **orden relativo del lote**; excluye `row_id` visual y fechas de registro. Las secuencias absolutas se asignan únicamente a solicitudes nuevas. Así, una respuesta perdida se puede reintentar incluso después de cerrar la operación: se devuelve exactamente el recibo anterior, sin insertar, recalcular secuencias ni incrementar revisión. La misma clave con contenido distinto produce 409. Si la cuenta fue archivada después del commit, el reintento se bloquea hasta reactivarla.
+
+`add_execution`, `add_executions`, `update_trade_metadata`, el cierre de la operación original de `record_reversal` y `append_execution_batch` incrementan la revisión una vez por modificación confirmada, incluso cuando hay varias filas. El rollback revierte también ese incremento. Las operaciones recién creadas por 3B.2 y la nueva operación de una reversión empiezan en revisión 0; la operación original de la reversión incrementa una vez.
+
+Ante `stale_revision`, la pantalla conserva el borrador y obliga a **Actualizar posición**, obtener otro preview y confirmar nuevamente. No reenvía automáticamente con otra revisión. Editar invalida el preview y las respuestas tardías se descartan. Ante un resultado incierto, bloquea los campos y mantiene contenido/clave para repetir el mismo guardado. Los borradores y claves están solo en memoria; `beforeunload` advierte de cambios, pero recargar puede perderlos y no hay recuperación persistente.
+
+### Fechas e inserciones retroactivas
+
+El offset se muestra y es editable; inicialmente es −04:00. No se infiere silenciosamente UTC ni se aplica horario estacional. Backend normaliza a UTC con microsegundos. Se aceptan inserciones históricas en pending/open únicamente si la historia combinada completa es válida. Se asignan secuencias `max(sequence existente) + 1...N`, sin modificar filas ni secuencias anteriores. El orden financiero es `(executed_at UTC, sequence)`; ante empate las nuevas filas siguen a las existentes y mantienen su orden de entrada.
+
+Si una fila precede temporalmente al último fill existente, el preview advierte explícitamente que puede recalcular promedios y P&L de salidas posteriores. La interfaz exige preview y confirmación también en ese caso. La API vuelve a validar al guardar, pero no almacena un comprobante de preview: los clientes del servicio/API son responsables de presentar y confirmar la previsualización.
+
+### Caso financiero y validación
+
+MNQ Long, sin otros cargos, utilizando el motor existente:
+
+| Paso | Abiertos | Promedio | Bruto USD | Costos acumulados USD | Neto USD |
+|---|---:|---:|---:|---:|---:|
+| Entrada 2 @ 20000, comisión 2.50 | 2 | 20000 | 0 | 2.50 | -2.50 |
+| Entrada 1 @ 20030, comisión 1.25 | 3 | 20010 | 0 | 3.75 | -3.75 |
+| Salida 1 @ 20050, comisión 1.25 | 2 | 20010 | 80 | 5.00 | 75.00 |
+| Salida 2 @ 20080, comisión 2.50 | 0 | null | 360 | 7.50 | 352.50 |
+
+El último estado es `closed`. El promedio ponderado y el P&L se calculan exclusivamente con el motor Decimal existente; precios persistidos en ticks y costos en micro-USD. Los costos se descuentan una sola vez. `test_execution_batches.py` y `test_position_routes.py` cubren este caso, Long/Short, snapshots concurrentes, revisiones, reintentos tras cierre/archivo, rollback, retroactivos, empates, errores, CSRF y límites. No se relajan las pruebas anteriores.
+
+```bash
+uv run --no-sync python -W error::ResourceWarning -m unittest discover -s tests -v
+node --check static/journal_detail.js
+node --check static/journal.js
+git diff --check
+PYTHONPATH=. WEBDRIVER_URL=http://127.0.0.1:4444 uv run --no-sync python tests/browser_position_validation.py
+```
+
+La prueba optativa de Firefox utiliza un WebDriver existente, una base temporal y un secreto efímero; no instala dependencias. Verifica acciones de posición, offsets, preservación de borradores, conflictos, respuesta perdida tras cierre, solo lectura y anchos de escritorio/móvil. Guarda capturas `/tmp/position-*.png` para inspección. No equivale a una prueba en un dispositivo móvil físico.
+
+Limitaciones: sin autenticación multiusuario, historial general, edición/eliminación de fills, correcciones auditables, importaciones, estadísticas ni precios de mercado. La historia se reproduce completa y se envía completa al detalle; los 200 fills limitan el lote, no la historia acumulada. La localización de errores por prefijos puede tener costo cuadrático sobre una historia larga. Se mantiene SQLite v2 sin migraciones y no se modifica el catálogo ni el motor financiero.

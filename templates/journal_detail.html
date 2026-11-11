@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block titulo %}Trade Detail{% endblock %}
+{% block contenido %}
+{% if error %}<h1>Trade Detail</h1><p class="account-message advertencia" role="alert">{{ error }}</p>
+{% else %}
+<header class="bienvenida">
+    <p class="etiqueta">Detalle de operación #{{ trade.id }}</p>
+    <h1>{{ trade.symbol }} · {{ trade.direction|capitalize }}</h1>
+    <p id="detail-account">{{ trade.account.name }} · {{ 'Activa' if trade.account.is_active else 'Archivada' }}</p>
+    <p>Estrategia: <span id="detail-strategy">{{ trade.strategy or '—' }}</span></p>
+    <p>Notas: <span id="detail-notes" class="trade-notes">{{ trade.notes or '—' }}</span></p>
+    <a href="{{ url_for('journal') }}">Volver al Journal</a> · <a href="{{ url_for('journal_new') }}">New Trade</a>
+</header>
+<section class="dashboard account-panel" aria-labelledby="current-title">
+    <h2 id="current-title">Posición actual</h2>
+    <p>Estado: <strong id="detail-status">{{ trade.summary.status }}</strong> · Revisión <span id="detail-revision">{{ trade.revision }}</span></p>
+    <dl id="detail-summary" class="resultados-grid">
+        {% for key, label in [('open_quantity','Contratos abiertos'),('average_price','Precio promedio'),('gross_pnl','P&L bruto realizado USD'),('commission','Comisiones USD'),('fees','Otros cargos USD'),('net_pnl','P&L neto acumulado USD')] %}
+        <div><dt>{{ label }}</dt><dd data-summary="{{ key }}">{{ trade.summary[key] if trade.summary[key] is not none else '—' }}</dd></div>
+        {% endfor %}
+    </dl>
+    <p class="ayuda">El neto descuenta los costos incurridos. Con contratos abiertos no es el resultado final. No se calcula P&amp;L no realizado.</p>
+    <p id="detail-readonly" class="advertencia" {% if trade.account.is_active and trade.summary.status != 'closed' %}hidden{% endif %}>Solo lectura: operación cerrada o cuenta archivada.</p>
+    <button type="button" id="refresh-position">Actualizar posición</button>
+</section>
+<section class="dashboard account-panel" aria-labelledby="history-title">
+    <h2 id="history-title">Historial completo · UTC</h2>
+    <div class="execution-table-wrap"><table class="detail-history">
+        <thead><tr><th>Secuencia</th><th>Fecha UTC</th><th>Tipo</th><th>Contratos</th><th>Precio</th><th>Comisión USD</th><th>Cargos USD</th></tr></thead>
+        <tbody id="detail-history">
+        {% for row in trade.executions %}<tr>{% for key in ['sequence','executed_at','execution_type','quantity','price','commission','fees'] %}<td>{{ row[key] }}</td>{% endfor %}</tr>{% endfor %}
+        </tbody>
+    </table></div>
+    <p id="history-empty" {% if trade.executions %}hidden{% endif %}>Sin ejecuciones; operación pending.</p>
+</section>
+<p id="execution-message" role="status" aria-live="polite"></p>
+<div id="execution-errors" role="alert" class="advertencia"></div>
+<form id="execution-form" data-preview="{{ url_for('execution_preview', trade_id=trade.id) }}" data-save="{{ url_for('execution_create', trade_id=trade.id) }}" data-detail="{{ url_for('journal_detail', trade_id=trade.id) }}" {% if not trade.account.is_active or trade.summary.status == 'closed' %}hidden{% endif %}>
+    <noscript>Para previsualizar y añadir ejecuciones necesitas JavaScript.</noscript>
+    <input type="hidden" id="execution-csrf" value="{{ csrf }}">
+    <fieldset id="execution-fields" class="dashboard account-panel">
+        <legend>Nueva ejecución</legend>
+        <div class="account-actions">
+            <button type="button" id="prepare-entry">Agregar entrada</button>
+            <button type="button" id="prepare-exit">Salida parcial</button>
+            <button type="button" id="prepare-close">Cerrar posición completa</button>
+        </div>
+        <div class="campos">
+            <label>Tipo <select name="execution_type"><option value="entry">Entrada</option><option value="exit">Salida</option></select></label>
+            <label>Fecha y hora <input type="datetime-local" name="executed_at" step="0.000001" required></label>
+            <label>Offset UTC explícito <input name="offset" value="-04:00" placeholder="±HH:MM" pattern="[+-][0-9]{2}:[0-9]{2}" maxlength="6" required></label>
+            <label>Contratos <input name="quantity" type="number" min="1" max="1000000000" step="1" value="1" required></label>
+            <label>Precio <input name="price" type="number" min="{{ tick }}" max="1000000000" step="{{ tick }}" required></label>
+            <label>Comisión total USD <input name="commission" type="number" min="0" max="1000000000" step="0.000001" value="0" required></label>
+            <label>Otros cargos totales USD <input name="fees" type="number" min="0" max="1000000000" step="0.000001" value="0" required></label>
+        </div>
+        <p class="ayuda">Offset fijo, inicialmente UTC−04:00 (Santo Domingo). No se utiliza silenciosamente la zona del navegador ni se ajusta el horario estacional. Los costos corresponden al total de esta ejecución.</p>
+        <button type="submit" id="preview-execution">Previsualizar ejecución</button>
+    </fieldset>
+    <section id="execution-preview" class="dashboard account-panel" hidden>
+        <h2>Estado actual y proyectado</h2>
+        <div class="execution-table-wrap"><table class="detail-history"><thead><tr><th>Indicador</th><th>Actual</th><th>Proyectado</th></tr></thead><tbody id="execution-comparison"></tbody></table></div>
+        <p id="retroactive-warning" class="advertencia" role="status" hidden></p>
+        <h3>Orden efectivo combinado · UTC</h3><ol id="execution-order"></ol>
+        <label><input type="checkbox" id="execution-confirm"> Confirmo los datos, el orden y el impacto mostrado.</label>
+        <button type="button" id="save-execution" disabled>Confirmar ejecución</button>
+    </section>
+</form>
+<script id="trade-snapshot" type="application/json">{{ trade|tojson }}</script>
+<script src="{{ url_for('static', filename='journal_detail.js') }}" defer></script>
+{% endif %}
+{% endblock %}

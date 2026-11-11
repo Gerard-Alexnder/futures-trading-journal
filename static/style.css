@@ -385,3 +385,19 @@ summary:focus-visible { outline: 3px solid var(--acento); outline-offset: 4px; }
     .execution-table input, .execution-table input[type="datetime-local"] { min-width: 0; }
     .row-errors { max-width: none; }
 }
+
+/* Detalle de posiciones: historial local, no historial general. */
+.detail-history { width: 100%; border-collapse: collapse; }
+.detail-history th, .detail-history td { padding: 10px; text-align: left; border-bottom: 1px solid var(--borde); }
+.detail-history td { overflow-wrap: anywhere; }
+#execution-form fieldset { min-width: 0; }
+#execution-form legend { padding: 0 8px; font-weight: 700; }
+#execution-order, #execution-errors { overflow-wrap: anywhere; }
+#save-execution { margin-top: 16px; }
+.trade-notes { white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 600px) {
+    .detail-history { min-width: 560px; }
+    #execution-preview .detail-history { min-width: 0; table-layout: fixed; }
+    #execution-preview th:first-child { width: 40%; }
+    #execution-preview th, #execution-preview td { padding: 10px 5px; overflow-wrap: anywhere; }
+}
