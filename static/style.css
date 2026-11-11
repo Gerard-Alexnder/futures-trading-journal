@@ -401,3 +401,19 @@ summary:focus-visible { outline: 3px solid var(--acento); outline-offset: 4px; }
     #execution-preview th:first-child { width: 40%; }
     #execution-preview th, #execution-preview td { padding: 10px 5px; overflow-wrap: anywhere; }
 }
+
+/* Journal: una fila lógica por operación; tarjetas en pantallas estrechas. */
+.history-table { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: .88rem; }
+.history-table th, .history-table td { padding: 10px 5px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--borde); overflow-wrap: anywhere; }
+.history-table th:first-child { width: 15%; }
+.history-pages { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 16px; margin-top: 24px; }
+@media (max-width: 900px) {
+    .history-table, .history-table tbody, .history-table tr, .history-table td { display: block; width: 100%; }
+    .history-table thead { display: none; }
+    .history-table tr { border: 1px solid var(--borde); border-radius: 8px; padding: 12px; margin-bottom: 16px; }
+    .history-table td { border: 0; }
+    .history-table td::before { content: attr(data-label); display: block; color: var(--secundario); font-weight: 600; }
+}
+@media (min-width: 901px) {
+    .history-table th:nth-child(3) { width: 10%; white-space: nowrap; font-size: .8rem; }
+}

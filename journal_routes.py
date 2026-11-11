@@ -1,7 +1,7 @@
 """Registro inicial y detalle de posiciones; sin edición histórica."""
 from decimal import Decimal
 
-from flask import current_app, jsonify, render_template, request, session
+from flask import current_app, jsonify, render_template, request, session, url_for
 from werkzeug.exceptions import BadRequest, RequestEntityTooLarge
 
 from contracts import CONTRACTS
@@ -23,6 +23,32 @@ def json_decimals(value):
 
 
 def register_journal_routes(app):
+    @app.get('/journal', endpoint='journal')
+    def history():
+        names = {'account_id','symbol','direction','status','date_from','date_to','utc_offset','page','page_size'}
+        values = request.args.to_dict()
+        result, errors, status_code = None, {}, 200
+        try:
+            errors = {name:'Parámetro desconocido o repetido.' for name in request.args
+                      if name not in names or len(request.args.getlist(name)) != 1}
+            if errors:
+                raise DraftValidationError({'fields':errors,'rows':{}})
+            result = TradeService(current_app.config['DATABASE']).query_journal(**values)
+        except DraftValidationError as failure:
+            errors, status_code = failure.errors['fields'], 400
+        except (DatabaseError, PersistenceError, TradeValidationError):
+            errors, status_code = {'form':'No se pudo consultar el historial. Verifica la base e intenta nuevamente.'}, 503
+        links = {}
+        if result:
+            filters = {k:v for k,v in result['filters'].items() if v is not None}
+            pagination = result['pagination']
+            for label, page in [('previous',pagination['page']-1),('next',pagination['page']+1)]:
+                if 1 <= page <= pagination['pages']:
+                    links[label] = url_for('journal', **filters, page_size=pagination['page_size'], page=page)
+            values = {**result['filters'], 'page_size':pagination['page_size']}
+        return render_template('journal.html', result=result, values=values, errors=errors,
+                               links=links, contracts=CONTRACTS), status_code
+
     @app.get('/journal/new', endpoint='journal_new')
     def new_trade():
         accounts, error, status = [], None, 200

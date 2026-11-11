@@ -1,6 +1,6 @@
 """API de negocio sin Flask; una conexión independiente por llamada."""
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from decimal import Decimal, localcontext
 import sqlite3
 import re
@@ -210,6 +210,114 @@ class TradeService:
             executions = self._executions(connection, trade_id)
             return {**trade, 'account': account, 'executions': self._display_executions(trade['symbol'], executions),
                     'summary': self._revalidate(trade, executions)}
+
+    def query_journal(self, *, account_id=None, symbol=None, direction=None, status=None,
+                      date_from=None, date_to=None, utc_offset='-04:00', page=1, page_size=25):
+        """Resultados de vida completa, filtrados por primera entrada, en un snapshot."""
+        errors = {}
+        def number(value, name, default=None):
+            if value is None or (value == '' and default is None):
+                return default
+            if isinstance(value, str) and re.fullmatch(r'[0-9]{1,10}', value):
+                value = int(value)
+            if type(value) is not int or not 1 <= value <= 1_000_000_000:
+                errors[name] = 'Utiliza un entero positivo de hasta 1000000000.'
+            return value
+        account_id = number(account_id, 'account_id')
+        page = number(page, 'page', 1)
+        page_size = number(page_size, 'page_size', 25)
+        if page_size not in (25, 50, 100): errors['page_size'] = 'Tamaños permitidos: 25, 50 y 100.'
+        selected = {}
+        for name, value, choices in [('symbol', symbol, CONTRACTS), ('direction', direction, ('long','short')),
+                                     ('status', status, ('pending','open','closed'))]:
+            value = None if value in (None, '') else value
+            if value is not None and (not isinstance(value, str) or value not in choices):
+                errors[name] = 'Opción no válida.'
+            selected[name] = value
+        zone = None
+        if isinstance(utc_offset, str) and re.fullmatch(r'[+-][0-9]{2}:[0-9]{2}', utc_offset):
+            hours, minutes = map(int, utc_offset[1:].split(':'))
+            if minutes < 60 and hours <= 14 and (hours < 14 or minutes == 0):
+                zone = timezone(timedelta(minutes=(hours*60+minutes)*(1 if utc_offset[0]=='+' else -1)))
+        if zone is None: errors['utc_offset'] = 'Offset ±HH:MM válido, hasta ±14:00.'
+        dates, bounds = {}, {}
+        for name, value in [('date_from', date_from), ('date_to', date_to)]:
+            dates[name] = None
+            bounds[name] = None
+            if value in (None, ''): continue
+            try:
+                if not isinstance(value, str) or not re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}', value): raise ValueError()
+                day = datetime.strptime(value, '%Y-%m-%d')
+                dates[name] = value
+                if zone is not None:
+                    if name == 'date_to': day += timedelta(days=1)
+                    bounds[name] = day.replace(tzinfo=zone).astimezone(timezone.utc).isoformat(timespec='microseconds').replace('+00:00','Z')
+            except (ValueError, OverflowError): errors[name] = 'Fecha imposible o límite fuera del calendario admitido.'
+        if dates['date_from'] and dates['date_to'] and dates['date_from'] > dates['date_to']:
+            errors['date_to'] = 'La fecha final debe ser igual o posterior a la inicial.'
+        if errors: raise DraftValidationError({'fields':errors, 'rows':{}})
+        filters = dict(account_id=account_id, **selected, **dates, utc_offset=utc_offset)
+        with self._snapshot() as connection:
+            accounts = [dict(r) for r in connection.execute('SELECT * FROM accounts ORDER BY id')]
+            by_account = {a['id']:a for a in accounts}
+            if account_id is not None and account_id not in by_account:
+                raise DraftValidationError({'fields':{'account_id':'Cuenta inexistente.'},'rows':{}})
+            clauses, params = [], []
+            for name, value in [('account_id',account_id),('symbol',selected['symbol']),('direction',selected['direction'])]:
+                if value is not None:
+                    clauses.append(f't.{name}=?'); params.append(value)
+            sql = 'SELECT t.* FROM trades t' + (' WHERE '+' AND '.join(clauses) if clauses else '') + ' ORDER BY t.id'
+            trades = [dict(r) for r in connection.execute(sql, params)]
+            items = []
+            for start in range(0, len(trades), 400):
+                batch = trades[start:start+400]
+                histories = {t['id']:[] for t in batch}
+                placeholders = ','.join('?' for _ in batch)
+                for r in connection.execute(f'SELECT * FROM executions WHERE trade_id IN ({placeholders}) ORDER BY trade_id,executed_at,sequence', list(histories)):
+                    histories[r['trade_id']].append(dict(r))
+                for trade in batch:
+                    history = histories[trade['id']]
+                    first = next((r['executed_at'] for r in history if r['execution_type']=='entry'), None)
+                    if history and first is None:
+                        raise PersistenceError('Historia sin entrada; requiere verificación.')
+                    effective = first or trade['created_at']
+                    if bounds['date_from'] and effective < bounds['date_from']: continue
+                    if bounds['date_to'] and effective >= bounds['date_to']: continue
+                    summary = self._revalidate(trade, history)
+                    if selected['status'] and summary['status'] != selected['status']: continue
+                    # No transportar la historia ni realized_by_execution al listado.
+                    compact = {k:v for k,v in summary.items() if k != 'realized_by_execution'}
+                    try:
+                        local_date = datetime.fromisoformat(effective.replace('Z','+00:00')).astimezone(zone).isoformat()
+                    except (ValueError, OverflowError) as error:
+                        raise PersistenceError('Fecha fuera del calendario de presentación.') from error
+                    items.append(dict(id=trade['id'], revision=trade['revision'], symbol=trade['symbol'],
+                                      direction=trade['direction'], strategy=trade['strategy'],
+                                      account=by_account[trade['account_id']], effective_at=effective,
+                                      date_is_creation=not history,
+                                      effective_local=local_date,
+                                      entry_quantity=sum(r['quantity'] for r in history if r['execution_type']=='entry'),
+                                      summary=compact))
+            values = [i['summary']['net_pnl'] for i in items]
+            # Exact addition of finite Decimal outputs, including cancellation and long fractions.
+            precision = max(50, max((v.adjusted() for v in values), default=0)
+                            - min((v.as_tuple().exponent for v in values), default=0)
+                            + len(str(max(1,len(values)))) + 2)
+            with localcontext() as context:
+                context.prec = precision
+                net = sum(values, Decimal(0))
+                closed = sum(i['summary']['status']=='closed' for i in items)
+                winners = sum(i['summary']['status']=='closed' and i['summary']['net_pnl']>0 for i in items)
+                win_rate = Decimal(winners)*100/closed if closed else None
+            statistics = dict(net_pnl=net, open_count=sum(i['summary']['status']=='open' for i in items),
+                              closed_count=closed, winning_count=winners, win_rate=win_rate)
+            items.sort(key=lambda i:(i['effective_at'],i['id']), reverse=True)
+            total = len(items); pages = (total+page_size-1)//page_size
+            effective_page = min(page, pages) if pages else 1
+            offset = (effective_page-1)*page_size
+            return dict(items=items[offset:offset+page_size], statistics=statistics, accounts=accounts, filters=filters,
+                        pagination=dict(requested_page=page, page=effective_page, page_size=page_size,
+                                        total=total, pages=pages, adjusted=page!=effective_page))
 
     def list_trades(self, account_id):
         with self._connection() as connection:

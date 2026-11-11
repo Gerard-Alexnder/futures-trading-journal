@@ -21,11 +21,6 @@ def inicio():
     return render_template("index.html")
 
 
-@app.route("/journal")
-def journal():
-    return render_template("journal.html")
-
-
 @app.route("/calendar")
 def calendar():
     return render_template("calendar.html")

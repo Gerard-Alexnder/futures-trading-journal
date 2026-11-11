@@ -2,9 +2,9 @@
 
 Aplicación web personal para organizar operaciones de futuros y, en fases posteriores, gestionar riesgo y analizar estadísticas de trading.
 
-## Estado actual: Fase 3B.3
+## Estado actual: Fase 3B.4
 
-Servidor Flask con navegación compartida, diseño oscuro adaptable y calculadora de riesgo funcional en `/calculator`. Accounts permite gestionar cuentas y `/journal/new` registra operaciones manuales. `/journal/<id>` muestra el detalle y permite continuar posiciones abiertas mediante entradas, salidas parciales y cierre completo. El listado de Journal, Dashboard, Calendar y Settings siguen siendo provisionales. No hay envío de órdenes, conexión a brokers ni autenticación.
+Servidor Flask con navegación compartida, diseño oscuro adaptable y calculadora de riesgo funcional en `/calculator`. Accounts permite gestionar cuentas y `/journal/new` registra operaciones manuales. `/journal/<id>` muestra el detalle y permite continuar posiciones abiertas mediante entradas, salidas parciales y cierre completo. Journal incluye historial filtrado, estadísticas y paginación; Dashboard, Calendar y Settings siguen siendo provisionales. No hay envío de órdenes, conexión a brokers ni autenticación.
 
 ## Tecnologías
 
@@ -473,7 +473,7 @@ git diff --check
 
 Las pruebas adicionales de `test_trade_drafts.py` y `test_journal_routes.py` utilizan bases temporales: preview sin cambios en el archivo, progresiva/histórica, equivalencia preview/persistencia, Long/Short, múltiples entradas, costos, offsets/empates, campos inválidos, cuentas, límites, rollback en mitad del lote y al registrar la clave, concurrencia, CSRF y regresiones. No se modifican ni relajan las pruebas anteriores.
 
-La interfaz requiere JavaScript; en móvil la tabla de creación se presenta como tarjetas de campos. No se implementan edición, historial general, auditoría, importaciones ni reglas de cuentas fondeadas. La continuación de operaciones guardadas se describe en la Fase 3B.3.
+La interfaz requiere JavaScript; en móvil la tabla de creación se presenta como tarjetas de campos. No se implementan edición, auditoría, importaciones ni reglas de cuentas fondeadas. El historial general se incorpora en 3B.4. La continuación de operaciones guardadas se describe en la Fase 3B.3.
 
 Validación optativa de JavaScript en Firefox, con un servidor WebDriver ya disponible (no instala dependencias):
 
@@ -485,7 +485,7 @@ El script usa una base temporal y una clave efímera de prueba. Comprueba la can
 
 ## Fase 3B.3 — Gestión de posiciones y detalle
 
-Después de crear una operación, el enlace **Ver operación y gestionar posición** abre `/journal/<id>`. También se puede acceder directamente por ID; el listado general sigue fuera de alcance. El detalle muestra cuenta, instrumento, dirección, estrategia, notas, revisión, resumen financiero e historia completa en orden efectivo. Operaciones cerradas y cuentas archivadas son de solo lectura. Una operación pending admite una primera entrada válida.
+Después de crear una operación, el enlace **Ver operación y gestionar posición** abre `/journal/<id>`. También se puede acceder directamente por ID o desde el historial de 3B.4. El detalle muestra cuenta, instrumento, dirección, estrategia, notas, revisión, resumen financiero e historia completa en orden efectivo. Operaciones cerradas y cuentas archivadas son de solo lectura. Una operación pending admite una primera entrada válida.
 
 La interfaz prepara una ejecución por vez: entrada adicional, salida parcial o cierre completo. El cierre completo toma la cantidad abierta mostrada, pero el servidor vuelve a validar cantidad, revisión e historia. El preview compara estado actual y proyectado; guardar exige confirmación. Se actualizan resumen e historial después del recibo confirmado. No hay cálculos financieros en JavaScript. Los importes mostrados son cadenas Decimal del servidor, sin redondeos monetarios intermedios.
 
@@ -546,4 +546,45 @@ PYTHONPATH=. WEBDRIVER_URL=http://127.0.0.1:4444 uv run --no-sync python tests/b
 
 La prueba optativa de Firefox utiliza un WebDriver existente, una base temporal y un secreto efímero; no instala dependencias. Verifica acciones de posición, offsets, preservación de borradores, conflictos, respuesta perdida tras cierre, solo lectura y anchos de escritorio/móvil. Guarda capturas `/tmp/position-*.png` para inspección. No equivale a una prueba en un dispositivo móvil físico.
 
-Limitaciones: sin autenticación multiusuario, historial general, edición/eliminación de fills, correcciones auditables, importaciones, estadísticas ni precios de mercado. La historia se reproduce completa y se envía completa al detalle; los 200 fills limitan el lote, no la historia acumulada. La localización de errores por prefijos puede tener costo cuadrático sobre una historia larga. Se mantiene SQLite v2 sin migraciones y no se modifica el catálogo ni el motor financiero.
+Limitaciones: sin autenticación multiusuario, edición/eliminación de fills, correcciones auditables, importaciones, estadísticas avanzadas ni precios de mercado. La historia se reproduce completa y se envía completa al detalle; los 200 fills limitan el lote, no la historia acumulada. La localización de errores por prefijos puede tener costo cuadrático sobre una historia larga. Se mantiene SQLite v2 sin migraciones y no se modifica el catálogo ni el motor financiero.
+
+## Fase 3B.4 — Historial y estadísticas
+
+`GET /journal` presenta una fila por operación lógica, con fecha efectiva, cuenta (también archivadas), contrato, dirección, estrategia, estado, suma de contratos de entrada, cantidad abierta, neto realizado y enlace al detalle. En móvil las filas se muestran como tarjetas. El formulario GET y la paginación funcionan sin JavaScript nuevo. No se filtra automáticamente por la cuenta seleccionada en sesión.
+
+Servicio de lectura:
+
+```python
+service.query_journal(account_id=None, symbol=None, direction=None, status=None,
+                      date_from=None, date_to=None, utc_offset='-04:00',
+                      page=1, page_size=25)
+```
+
+Todos los argumentos son keyword-only. Devuelve `items`, `statistics`, `pagination`, `filters` y `accounts`. `list_trades()` conserva su contrato. Las cuentas y los resultados se leen en el mismo snapshot `BEGIN` + `query_only`, cerrado antes de renderizar HTML. No se escriben revisiones, ejecuciones ni claves idempotentes.
+
+Filtros opcionales: cuenta por ID, símbolo ES/MES/NQ/MNQ, dirección long/short, estado pending/open/closed, fechas civiles `YYYY-MM-DD` y offset fijo `±HH:MM` hasta ±14:00 (minutos 00–59; a 14 horas solo :00). Las opciones vacías significan todos. Página positiva hasta 1000000000, tamaño 25/50/100. Parámetros desconocidos, repetidos, valores inválidos, cuenta inexistente y rangos invertidos devuelven 400, conservando los valores del formulario y sin mostrar estadísticas. Fallos de persistencia devuelven 503 controlado.
+
+La fecha efectiva es la primera entrada en orden UTC/secuencia, incluso retroactiva; únicamente si no hay ejecuciones se usa creación, identificada como **Fecha de creación**. Se convierten las fechas al intervalo UTC `[inicio desde, inicio del día posterior a hasta)`, usando el offset visible, inicialmente −04:00, sin zona automática ni horario estacional. El rango selecciona operaciones, **no recorta sus ejecuciones**: una entrada del 10 de noviembre con cierre el 12 aparece al filtrar solo el día 10 con todo su resultado financiero.
+
+Las estadísticas se calculan después de todos los filtros y antes de paginar:
+
+- `net_pnl`: suma Decimal de los netos de vida completa, incluidos costos de posiciones abiertas.
+- `open_count`, `closed_count`: estados devueltos por el motor.
+- `winning_count`: cerradas con neto estrictamente positivo, antes de redondear.
+- `win_rate`: ganadoras / cerradas × 100; `None` y «—» cuando no hay cerradas. Cero no gana; abiertas/pending no entran en el denominador.
+
+La suma usa precisión dinámica suficiente para conservar exactamente los Decimal finitos del motor, incluida cancelación entre valores grandes y fracciones pequeñas. Solo la presentación redondea a dos decimales. Un neto positivo inferior a medio centavo puede mostrarse como +0.00 y «Positivo» y sí contar como ganador. No se estima P&L no realizado.
+
+El orden es fecha efectiva UTC descendente y luego ID descendente. Los enlaces conservan filtros y tamaño; aplicar filtros reinicia la página a 1. Una página fuera de rango muestra la última con aviso. Sin resultados, página efectiva 1 y cero páginas de resultados. No se garantiza la misma distribución entre solicitudes concurrentes.
+
+Cuenta, instrumento y dirección se filtran mediante SQL parametrizado. Las ejecuciones se leen en lotes de hasta 400 operaciones, sin N+1; fechas se filtran al obtener la primera entrada y el estado después del replay. Cada operación que pasa el filtro temporal se reproduce como máximo una vez mediante `_revalidate()` / `calculate_trade()`. Solo la página y métricas se envían al navegador, sin historias completas ni resultados por ejecución. Se conserva en memoria el conjunto de resúmenes, no todas las ejecuciones a la vez.
+
+Medición local con SQLite temporal, cuatro ejecuciones por operación, sin filtros y página de 25: 1,000 operaciones / 4,000 ejecuciones en 0.0258 s; 5,000 operaciones / 20,000 ejecuciones en 0.1220 s. Son mediciones puntuales de este entorno, no garantías de latencia ni límites de tests. No se introducen índices, tablas derivadas, cachés ni migraciones. Las lecturas largas pueden retrasar escritores en rollback-journal; el costo sigue creciendo con la historia candidata y el número de operaciones.
+
+Pruebas nuevas: `test_journal_history.py` y `test_journal_history_routes.py`. Todas utilizan bases temporales; las 82 pruebas previas se conservan. Validación opcional con un WebDriver Firefox existente:
+
+```bash
+PYTHONPATH=. WEBDRIVER_URL=http://127.0.0.1:4444 uv run --no-sync python tests/browser_journal_history_validation.py
+```
+
+Usa base temporal y secreto efímero. Las capturas `/tmp/history-desktop.png` y `/tmp/history-mobile.png` no forman parte del repositorio. No incluye correcciones auditables, importación, estadísticas avanzadas ni fases posteriores.
