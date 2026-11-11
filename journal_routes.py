@@ -9,6 +9,7 @@ from database import DatabaseError
 from trade_calculations import TradeValidationError
 from trade_service import (TradeService, DraftValidationError, NotFoundError,
                            ArchivedAccountError, ConflictError, PersistenceError, StaleRevisionError, TradeClosedError)
+from preview_tokens import PreviewTokenError
 from web_support import csrf_token, valid_csrf
 
 
@@ -88,7 +89,7 @@ def register_journal_routes(app):
                                tick=CONTRACTS[snapshot['symbol']]['tick_size'] if snapshot else None,
                                csrf=csrf_token() if current_app.secret_key else ''), status
 
-    def process(create=False, trade_id=None):
+    def process(create=False, trade_id=None, execution_id=None, action=None):
         request.max_content_length = 512 * 1024
         try:
             if not current_app.secret_key:
@@ -102,18 +103,25 @@ def register_journal_routes(app):
                 return api_error('Envía un objeto JSON.', 400)
             allowed = ({'expected_revision', 'executions'} if trade_id is not None else
                        {'account_id', 'symbol', 'direction', 'strategy', 'notes', 'mode', 'executions'})
+            if action:
+                allowed = {'expected_revision','reason'} | ({'replacement'} if action=='correction' else set())
+                if create: allowed.add('preview_token')
             if create:
                 allowed.add('request_id')
             if set(data) - allowed:
                 return api_error('La solicitud contiene campos desconocidos.', 400)
             required = ({'expected_revision', 'executions'} if trade_id is not None else
                         {'account_id', 'symbol', 'direction', 'executions', 'mode'}) | ({'request_id'} if create else set())
+            if action: required = allowed
             missing = required - data.keys()
             if missing:
                 return api_error('Faltan campos obligatorios.', 400,
                                  {'fields': {name: 'Campo requerido.' for name in sorted(missing)}, 'rows': {}})
-            service = TradeService(current_app.config['DATABASE'])
-            if trade_id is not None:
+            service = TradeService(current_app.config['DATABASE'], preview_secret=current_app.secret_key)
+            if action:
+                method = (service.correct_execution if create else service.preview_execution_correction) if action=='correction' else (service.void_execution if create else service.preview_execution_void)
+                result = method(trade_id, execution_id, **data)
+            elif trade_id is not None:
                 result = (service.append_execution_batch(trade_id, **data) if create else
                           service.preview_execution_batch(trade_id, **data))
             else:
@@ -134,6 +142,8 @@ def register_journal_routes(app):
             return api_error(str(error), 409, code='stale_revision')
         except TradeClosedError as error:
             return api_error(str(error), 409, code='trade_closed')
+        except PreviewTokenError as error:
+            return api_error(str(error), 409, code='invalid_preview')
         except ConflictError as error:
             return api_error(str(error), 409, code='idempotency_conflict')
         except DraftValidationError as error:
@@ -152,3 +162,11 @@ def register_journal_routes(app):
                      view_func=lambda trade_id: process(False, trade_id), methods=['POST'])
     app.add_url_rule('/api/journal/<int:trade_id>/executions', endpoint='execution_create',
                      view_func=lambda trade_id: process(True, trade_id), methods=['POST'])
+
+    for action in ('correction','void'):
+        for create in (False, True):
+            suffix = '' if create else '/preview'
+            app.add_url_rule('/api/journal/<int:trade_id>/executions/<int:execution_id>/'+action+suffix,
+                             endpoint='execution_'+action+('_commit' if create else '_preview'),
+                             view_func=lambda trade_id, execution_id, action=action, create=create: process(create, trade_id, execution_id, action),
+                             methods=['POST'])

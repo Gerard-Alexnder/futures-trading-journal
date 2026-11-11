@@ -417,3 +417,18 @@ summary:focus-visible { outline: 3px solid var(--acento); outline-offset: 4px; }
 @media (min-width: 901px) {
     .history-table th:nth-child(3) { width: 10%; white-space: nowrap; font-size: .8rem; }
 }
+
+/* Correcciones individuales y auditoría: no oculta ejecuciones anuladas. */
+.voided-execution { color: var(--secundario); }
+#detail-history button { display: block; margin: 6px 0; padding: 7px 10px; }
+#amendment-fields { border: 0; padding: 0; min-width: 0; }
+#amendment-fields textarea { display: block; width: 100%; min-height: 90px; margin: 12px 0; }
+#amendment-preview, #audit-history { overflow-wrap: anywhere; }
+#audit-history pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+#audit-history details { padding: 12px 0; border-bottom: 1px solid var(--borde); }
+#audit-history dd { margin: 0 0 12px; }
+#amendment-form > button, #save-amendment { margin-top: 16px; }
+@media (max-width: 600px) {
+    #amendment-preview .detail-history { min-width: 0; table-layout: fixed; }
+    #amendment-preview th, #amendment-preview td { padding: 8px 4px; overflow-wrap: anywhere; }
+}

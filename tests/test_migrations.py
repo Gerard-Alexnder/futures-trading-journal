@@ -28,14 +28,14 @@ class MigrationTests(unittest.TestCase):
     def test_migrate_preserves_data_backup_and_repeat(self):
         backup = migrate(self.path)
         self.assertTrue(backup.is_file())
-        for path, version in [(backup,1), (self.path,2)]:
+        for path, version in [(backup,1), (self.path,3)]:
             c = connect(path)
             try:
                 verify(c, expected_version=version)
-                self.assertEqual(tuple(c.execute('SELECT * FROM executions').fetchone()), self.before)
+                self.assertEqual(tuple(c.execute('SELECT * FROM executions').fetchone()), self.before + ((0,) if version==3 else ()))
                 self.assertEqual(c.execute('SELECT id FROM accounts').fetchone()[0], 7)
                 self.assertEqual(c.execute('SELECT id FROM trades').fetchone()[0], 11)
-                if version == 2:
+                if version == 3:
                     self.assertEqual(c.execute('SELECT revision FROM trades').fetchone()[0], 0)
                     with self.assertRaises(sqlite3.IntegrityError):
                         c.execute('UPDATE trades SET revision=-1')
@@ -77,7 +77,7 @@ class MigrationTests(unittest.TestCase):
         with self.assertRaises(sqlite3.DatabaseError):
             migrate(self.path)
 
-    def test_fresh_v2(self):
+    def test_fresh_v3(self):
         fresh = self.path.parent/'new.sqlite3'
         initialize(fresh)
         c=connect(fresh)
@@ -90,7 +90,7 @@ class MigrationTests(unittest.TestCase):
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('Respaldo:', result.stdout)
-        self.assertIn('versión 2', result.stdout)
+        self.assertIn('versión 3', result.stdout)
         c = connect(self.path)
         try:
             c.execute('DROP INDEX executions_external')

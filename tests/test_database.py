@@ -21,7 +21,7 @@ class DatabaseTests(unittest.TestCase):
         initialize(self.path)
         verify(self.connection)
         self.assertEqual(self.connection.execute('PRAGMA foreign_keys').fetchone()[0], 1)
-        self.assertEqual(self.connection.execute('PRAGMA user_version').fetchone()[0], 2)
+        self.assertEqual(self.connection.execute('PRAGMA user_version').fetchone()[0], 3)
         if sqlite3.sqlite_version_info >= (3, 37, 0):
             rows = self.connection.execute('PRAGMA table_list').fetchall()
             self.assertTrue(all(row['strict'] for row in rows if row['name'] in ('accounts', 'trades', 'executions')))

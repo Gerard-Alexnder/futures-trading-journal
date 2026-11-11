@@ -13,6 +13,7 @@
     const names = ['execution_type', 'executed_at', 'offset', 'quantity', 'price', 'commission', 'fees'];
     let version = 0, previewing = false, saving = false, refreshing = false;
     let uncertain = false, stale = false, confirmed = false;
+    let amendmentActive = false, amendmentLocked = false;
     let controller = null, prepared = null, requestId = null;
     const state = () => JSON.stringify(names.map(name => form.elements[name].value));
     let baseline = state();
@@ -21,14 +22,15 @@
 
     function controls() {
         form.hidden = readonly();
-        fields.disabled = saving || uncertain || refreshing || readonly();
+        fields.disabled = amendmentActive || saving || uncertain || refreshing || readonly();
         document.querySelector('#preview-execution').disabled = previewing || saving || uncertain || refreshing || stale;
         document.querySelector('#prepare-exit').disabled = current.summary.open_quantity === 0 || previewing;
         document.querySelector('#prepare-close').disabled = current.summary.open_quantity === 0 || previewing;
         document.querySelector('#prepare-entry').disabled = previewing;
-        refreshButton.disabled = saving || uncertain || refreshing;
+        refreshButton.disabled = amendmentLocked || saving || uncertain || refreshing;
         confirm.disabled = saving || refreshing;
-        save.disabled = !prepared || !confirm.checked || saving || refreshing || stale || readonly();
+        document.querySelectorAll('[data-amend-action]').forEach(button => { button.disabled = amendmentActive || saving || uncertain || refreshing; });
+        save.disabled = amendmentActive || !prepared || !confirm.checked || saving || refreshing || stale || readonly();
     }
     function clearErrors() {
         errors.replaceChildren();
@@ -64,10 +66,36 @@
             for (const field of ['sequence', 'executed_at', 'execution_type', 'quantity', 'price', 'commission', 'fees']) {
                 const td = document.createElement('td'); td.textContent = row[field]; tr.append(td);
             }
-            history.append(tr);
+            const actions = document.createElement('td');
+            const state = document.createElement('span'); state.textContent = row.is_voided ? 'Anulada' : 'Vigente'; actions.append(state);
+            if (row.is_voided) tr.classList.add('voided-execution');
+            if (!row.is_voided && current.account.is_active) {
+                for (const [action, label] of [['correction','Corregir'],['void','Anular']]) {
+                    const button = document.createElement('button'); button.type = 'button'; button.textContent = label;
+                    button.dataset.amendAction = action; button.dataset.executionId = row.id;
+                    button.addEventListener('click', () => window.dispatchEvent(new CustomEvent('journal:amend', {detail:{row, action, snapshot:current}})));
+                    actions.append(button);
+                }
+            }
+            tr.append(actions); history.append(tr);
         }
-        document.querySelector('#history-empty').hidden = current.executions.length > 0;
+        document.querySelector('#history-empty').hidden = current.executions.some(row => !row.is_voided);
+        const audit = document.querySelector('#audit-history'); audit.replaceChildren();
+        if (!current.audit.length) { const line = document.createElement('p'); line.textContent = 'Sin correcciones ni anulaciones registradas.'; audit.append(line); }
+        for (const event of current.audit) {
+            const details = document.createElement('details'), summary = document.createElement('summary');
+            summary.textContent = `#${event.id} · ${event.action} · Ejecución #${event.execution_id} · ${event.occurred_at}`;
+            details.append(summary);
+            const reason = document.createElement('p'); reason.textContent = `${event.reason} · Revisión ${event.previous_revision} → ${event.new_revision} · Solicitud ${event.request_id}`; details.append(reason);
+            const changes = document.createElement('dl');
+            for (const [field,label] of [['executed_at','Fecha UTC'],['execution_type','Tipo'],['quantity','Contratos'],['price','Precio'],['commission','Comisión USD'],['fees','Cargos USD'],['is_voided','Anulada (0=no, 1=sí)'],['sequence','Secuencia']]) {
+                const term = document.createElement('dt'), value = document.createElement('dd'); term.textContent = label;
+                value.textContent = `${event.before_display[field] ?? '—'} → ${event.after_display[field] ?? '—'}`; changes.append(term,value);
+            }
+            details.append(changes); audit.append(details);
+        }
         controls();
+        window.dispatchEvent(new CustomEvent('journal:snapshot', {detail:current}));
     }
     function renderPreview(result) {
         const tbody = document.querySelector('#execution-comparison'); tbody.replaceChildren();
@@ -83,7 +111,7 @@
         const order = document.querySelector('#execution-order'); order.replaceChildren();
         for (const row of result.executions) {
             const li = document.createElement('li');
-            li.textContent = `${row.row_id ? 'Nueva' : 'Existente'} · secuencia ${row.sequence} · ${row.executed_at} · ${row.execution_type} ${row.quantity} a ${row.price} · comisión ${row.commission} · cargos ${row.fees}`;
+            li.textContent = `${row.is_voided ? 'Anulada (excluida)' : (row.row_id ? 'Nueva' : 'Existente')} · secuencia ${row.sequence} · ${row.executed_at} · ${row.execution_type} ${row.quantity} a ${row.price} · comisión ${row.commission} · cargos ${row.fees}`;
             order.append(li);
         }
         preview.hidden = false;
@@ -102,7 +130,7 @@
         showErrors(data.errors || {});
     }
     async function refresh(reset = false) {
-        if (saving || uncertain || refreshing) return;
+        if (amendmentLocked || saving || uncertain || refreshing) return;
         if (controller) controller.abort();
         version += 1; previewing = false; prepared = null; preview.hidden = true; confirm.checked = false;
         refreshing = true; controls();
@@ -131,7 +159,7 @@
     }
     form.addEventListener('submit', async event => {
         event.preventDefault();
-        if (saving || uncertain || refreshing || stale || readonly() || !form.reportValidity()) return;
+        if (amendmentActive || saving || uncertain || refreshing || stale || readonly() || !form.reportValidity()) return;
         invalidate();
         const draft = payload(), stamp = version;
         controller = new AbortController(); const signal = controller.signal;
@@ -149,7 +177,7 @@
         } finally { if (stamp === version) { previewing = false; controller = null; controls(); } }
     });
     save.addEventListener('click', async () => {
-        if (!prepared || !confirm.checked || saving || stale || readonly()) return;
+        if (amendmentActive || !prepared || !confirm.checked || saving || stale || readonly()) return;
         saving = true; controls(); message.textContent = 'Guardando ejecución…';
         let success = false;
         try {
@@ -174,5 +202,11 @@
     window.addEventListener('beforeunload', event => {
         if (!confirmed && (saving || uncertain || state() !== baseline)) { event.preventDefault(); event.returnValue = ''; }
     });
+    window.addEventListener('journal:amendment-state', event => {
+        amendmentActive = event.detail.active; amendmentLocked = event.detail.locked;
+        if (amendmentActive) invalidate();
+        controls();
+    });
+    window.addEventListener('journal:refresh-request', () => refresh(false));
     renderCurrent();
 })();

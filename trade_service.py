@@ -4,6 +4,8 @@ from datetime import datetime, timezone, timedelta
 from decimal import Decimal, localcontext
 import sqlite3
 import re
+import json
+from preview_tokens import canonical, issue as issue_preview, validate as validate_preview, verify_binding
 
 from contracts import CONTRACTS
 from idempotency import ConflictError, execute_once
@@ -65,8 +67,9 @@ def text_field(value, name, optional=False, limit=200):
 
 
 class TradeService:
-    def __init__(self, path=DEFAULT_PATH):
+    def __init__(self, path=DEFAULT_PATH, *, preview_secret=None):
         self.path = path
+        self.preview_secret = preview_secret
 
     @contextmanager
     def _connection(self, write=False):
@@ -74,7 +77,7 @@ class TradeService:
         try:
             connection = connect(self.path)
             if connection.execute('PRAGMA user_version').fetchone()[0] != SCHEMA_VERSION:
-                raise DatabaseError('Base incompatible. Para v1 ejecuta uv run --no-sync python -m database migrate; para versiones futuras utiliza una aplicación compatible.')
+                raise DatabaseError('Base incompatible. Para v1/v2 ejecuta uv run --no-sync python -m database migrate; para versiones futuras utiliza una aplicación compatible.')
             if write:
                 with transaction(connection):
                     yield connection
@@ -141,7 +144,7 @@ class TradeService:
     def _revalidate(trade, candidate_history):
         # Punto común para futuras correcciones atómicas, incluso de trades cerrados.
         # La restricción de añadir a un trade cerrado pertenece al comando de alta.
-        return calculate_trade(trade['symbol'], trade['direction'], candidate_history)
+        return calculate_trade(trade['symbol'], trade['direction'], [r for r in candidate_history if not r.get('is_voided', 0)])
 
     def create_account(self, name, account_type, platform=None, *, request_id=None):
         name = text_field(name, 'name')
@@ -208,8 +211,15 @@ class TradeService:
             trade = self._trade(connection, trade_id)
             account = self._account(connection, trade['account_id'])
             executions = self._executions(connection, trade_id)
+            audit = []
+            for row in connection.execute('SELECT * FROM execution_audit WHERE trade_id=? ORDER BY id', (trade_id,)):
+                event = dict(row)
+                for side in ('before','after'):
+                    event[side] = json.loads(row[side+'_json'])
+                    event[side+'_display'] = self._display_executions(trade['symbol'], [event[side]])[0]
+                audit.append(event)
             return {**trade, 'account': account, 'executions': self._display_executions(trade['symbol'], executions),
-                    'summary': self._revalidate(trade, executions)}
+                    'summary': self._revalidate(trade, executions), 'audit':audit}
 
     def query_journal(self, *, account_id=None, symbol=None, direction=None, status=None,
                       date_from=None, date_to=None, utc_offset='-04:00', page=1, page_size=25):
@@ -276,7 +286,7 @@ class TradeService:
                 for r in connection.execute(f'SELECT * FROM executions WHERE trade_id IN ({placeholders}) ORDER BY trade_id,executed_at,sequence', list(histories)):
                     histories[r['trade_id']].append(dict(r))
                 for trade in batch:
-                    history = histories[trade['id']]
+                    history = [r for r in histories[trade['id']] if not r['is_voided']]
                     first = next((r['executed_at'] for r in history if r['execution_type']=='entry'), None)
                     if history and first is None:
                         raise PersistenceError('Historia sin entrada; requiere verificación.')
@@ -485,7 +495,7 @@ class TradeService:
         # Conversión de unidades para presentación; no duplica el motor financiero.
         with localcontext() as context:
             context.prec = 50
-            return [{**row,
+            return [{**row, 'is_voided': row.get('is_voided', 0),
                      'price': format(Decimal(row['price_ticks']) * CONTRACTS[symbol]['tick_size'], 'f'),
                      'commission': format(Decimal(row['commission_microusd']) / 1_000_000, 'f'),
                      'fees': format(Decimal(row['fees_microusd']) / 1_000_000, 'f')}
@@ -592,6 +602,108 @@ class TradeService:
 
             # Reintentos confirmados se resuelven antes de comprobar revisión/cierre.
             return execute_once(connection, request_id, 'append_execution_batch', canonical, append)
+
+    def _amendment_request(self, trade, execution_id, replacement, expected_revision, reason, action):
+        self._validate_revision(expected_revision)
+        integer(execution_id, 'execution_id')
+        reason = text_field(reason, 'reason', limit=2000)
+        normalized = None
+        if action == 'correction':
+            required = {'executed_at','execution_type','quantity','price','commission','fees'}
+            if not isinstance(replacement, dict) or set(replacement) != required:
+                raise DraftValidationError({'fields':{'replacement':'Incluye exactamente los seis campos corregibles.'},'rows':{}})
+            row = self._normalize_execution_rows(trade['symbol'], [{**replacement, 'row_id':'correction'}])[0]
+            normalized = {k:v for k,v in row.items() if k not in ('row_id','sequence')}
+        return dict(action=action, trade_id=trade['id'], execution_id=execution_id,
+                    expected_revision=expected_revision, reason=reason, replacement=normalized)
+
+    @staticmethod
+    def _target(history, execution_id):
+        target = next((r for r in history if r['id']==execution_id), None)
+        if target is None:
+            raise NotFoundError('La ejecución no pertenece a esta operación.')
+        return target
+
+    def _project_amendment(self, trade, history, request):
+        if trade['revision'] != request['expected_revision']:
+            raise StaleRevisionError('La operación cambió. Actualiza y previsualiza de nuevo.')
+        before = self._target(history, request['execution_id'])
+        if before['is_voided']:
+            raise ConflictError('La ejecución ya está anulada; no admite cambios ni restauración.')
+        after = {**before, **(request['replacement'] or {'is_voided':1})}
+        if after == before:
+            raise DraftValidationError({'fields':{'replacement':'La corrección no cambia valores efectivos.'},'rows':{}})
+        candidate = [after if r['id']==before['id'] else r for r in history]
+        current = self._revalidate(trade, history)
+        try:
+            projected = self._revalidate(trade, candidate)
+        except TradeValidationError as error:
+            raise DraftValidationError({'fields':{'history':str(error)},'rows':{str(before['id']):{'history':str(error)}}}) from error
+        def order(rows):
+            return [r['id'] for r in sorted(rows,key=lambda r:(r['executed_at'],r['sequence'])) if not r['is_voided']]
+        warnings = ['Se recalcula toda la historia vigente, incluidos resultados posteriores. No se modifican otras ejecuciones.']
+        if current['status']=='closed' and projected['status']=='open':
+            warnings.append('La operación cerrada volverá a open y admitirá nuevas ejecuciones válidas.')
+        if projected['status']=='pending':
+            warnings.append('No quedarán ejecuciones vigentes: estado pending, posición y neto cero.')
+        if request['action']=='void':
+            warnings.append('La anulación excluye también los costos de esta ejecución. No hay restauración en esta fase.')
+        return dict(trade_id=trade['id'], execution_id=before['id'], revision=trade['revision'],
+                    current=current, projected=projected, before=before, after=after,
+                    current_order=order(history), projected_order=order(candidate), warnings=warnings)
+
+    def _preview_amendment(self, trade_id, execution_id, replacement, expected_revision, reason, action):
+        with self._snapshot() as connection:
+            trade = self._trade(connection, trade_id)
+            self._account(connection, trade['account_id'], writable=True)
+            request = self._amendment_request(trade, execution_id, replacement, expected_revision, reason, action)
+            result = self._project_amendment(trade, self._executions(connection, trade_id), request)
+            token = issue_preview(self.preview_secret, {'request':request, 'result':result})
+            return {**result, 'preview_token':token, 'expires_in':600,
+                    'before_display':self._display_executions(trade['symbol'], [result['before']])[0],
+                    'after_display':self._display_executions(trade['symbol'], [result['after']])[0]}
+
+    def preview_execution_correction(self, trade_id, execution_id, replacement, *, expected_revision, reason):
+        return self._preview_amendment(trade_id, execution_id, replacement, expected_revision, reason, 'correction')
+
+    def preview_execution_void(self, trade_id, execution_id, *, expected_revision, reason):
+        return self._preview_amendment(trade_id, execution_id, None, expected_revision, reason, 'void')
+
+    def _commit_amendment(self, trade_id, execution_id, replacement, expected_revision, reason, request_id, preview_token, action):
+        with self._connection(write=True) as connection:
+            trade = self._trade(connection, trade_id)
+            self._account(connection, trade['account_id'], writable=True)
+            request = self._amendment_request(trade, execution_id, replacement, expected_revision, reason, action)
+            # Membership and active account checked even for confirmed retries.
+            target = connection.execute('SELECT id FROM executions WHERE id=? AND trade_id=?', (execution_id,trade_id)).fetchone()
+            if target is None:
+                raise NotFoundError('La ejecución no pertenece a esta operación.')
+            def commit():
+                if trade['revision'] != expected_revision:
+                    raise StaleRevisionError('La operación cambió. Actualiza y previsualiza de nuevo.')
+                token = validate_preview(self.preview_secret, preview_token)
+                result = self._project_amendment(trade, self._executions(connection, trade_id), request)
+                verify_binding(token, {'request':request, 'result':result})
+                changes = request['replacement'] or {'is_voided':1}
+                columns = ','.join(name+'=?' for name in changes)
+                connection.execute(f'UPDATE executions SET {columns} WHERE id=? AND trade_id=?',
+                                   (*changes.values(),execution_id,trade_id))
+                audit_id = connection.execute('''INSERT INTO execution_audit
+                    (trade_id,execution_id,action,occurred_at,reason,before_json,after_json,
+                     previous_revision,new_revision,request_id,snapshot_version)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,1)''',
+                    (trade_id,execution_id,action,timestamp(),request['reason'],canonical(result['before']),
+                     canonical(result['after']),expected_revision,expected_revision+1,request_id)).lastrowid
+                revision = self._bump_revision(connection, trade_id, expected_revision)
+                return dict(trade_id=trade_id, execution_id=execution_id, audit_id=audit_id, revision=revision)
+            # Token excluded: semantic command is stable across expiry/reissued proofs.
+            return execute_once(connection, request_id, action+'_execution', request, commit)
+
+    def correct_execution(self, trade_id, execution_id, replacement, *, expected_revision, reason, request_id, preview_token):
+        return self._commit_amendment(trade_id, execution_id, replacement, expected_revision, reason, request_id, preview_token, 'correction')
+
+    def void_execution(self, trade_id, execution_id, *, expected_revision, reason, request_id, preview_token):
+        return self._commit_amendment(trade_id, execution_id, None, expected_revision, reason, request_id, preview_token, 'void')
 
     def record_reversal(self, trade_id, closing_execution, opening_execution):
         """Registra dos partes explícitas; no reconstruye ni reparte órdenes importadas."""

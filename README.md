@@ -2,9 +2,11 @@
 
 Aplicación web personal para organizar operaciones de futuros y, en fases posteriores, gestionar riesgo y analizar estadísticas de trading.
 
-## Estado actual: Fase 3B.4
+## Estado actual: Fase 3B.5
 
-Servidor Flask con navegación compartida, diseño oscuro adaptable y calculadora de riesgo funcional en `/calculator`. Accounts permite gestionar cuentas y `/journal/new` registra operaciones manuales. `/journal/<id>` muestra el detalle y permite continuar posiciones abiertas mediante entradas, salidas parciales y cierre completo. Journal incluye historial filtrado, estadísticas y paginación; Dashboard, Calendar y Settings siguen siendo provisionales. No hay envío de órdenes, conexión a brokers ni autenticación.
+Servidor Flask con navegación compartida, diseño oscuro adaptable y calculadora de riesgo funcional en `/calculator`. Accounts permite gestionar cuentas y `/journal/new` registra operaciones manuales. `/journal/<id>` muestra el detalle y permite continuar posiciones abiertas mediante entradas, salidas parciales y cierre completo. Journal incluye historial filtrado, estadísticas, paginación y correcciones/anulaciones individuales con auditoría; Dashboard, Calendar y Settings siguen siendo provisionales. No hay envío de órdenes, conexión a brokers ni autenticación.
+
+**Esquema actual requerido: SQLite v3.** No se migra automáticamente al arrancar. Las secciones de fases anteriores conservan contexto histórico; el procedimiento vigente de corrección, migración y recuperación está en la sección 3B.5.
 
 ## Tecnologías
 
@@ -262,7 +264,7 @@ Salvo los campos marcados NULL y las claves primarias, todos son `NOT NULL`. Res
 - Índice único parcial `(account_id, external_namespace, external_execution_id)` para IDs no nulos.
 - Índices de consulta `(account_id, created_at, id)` en trades y `(trade_id, executed_at, sequence)` en executions.
 
-Los nombres de cuenta no son únicos. No se almacenan estado, promedio ni P&L calculados. Las reglas que dependen de varias filas y la normalización de fechas pertenecen al servicio; el SQL directo puede eludirlas y no es una interfaz de escritura soportada. No hay triggers que implementen inmutabilidad ni auditoría.
+Los nombres de cuenta no son únicos. No se almacenan estado, promedio ni P&L calculados. Las reglas que dependen de varias filas y la normalización de fechas pertenecen al servicio; el SQL directo puede eludirlas y no es una interfaz de escritura soportada. En v3, los triggers impiden editar o borrar execution_audit; la historia financiera vigente se modifica solo mediante los servicios auditables.
 
 ### Exactitud, promedio y P&L
 
@@ -324,7 +326,7 @@ Define `SECRET_KEY` mediante una variable de entorno o el gestor de secretos del
 
 Sin `SECRET_KEY`, Accounts responde 503 con instrucciones; las páginas existentes y la calculadora siguen disponibles. Las cookies de sesión tienen `HttpOnly` y `SameSite=Lax`. Define `SESSION_COOKIE_SECURE=true` para HTTPS (en HTTP local debe permanecer desactivado). No se establece duración permanente: la cookie dura la sesión del navegador, sujeta a la restauración de sesiones propia del navegador. La sesión contiene token CSRF, ID de cuenta seleccionada y mensajes de interfaz; no importes financieros. Las cookies firmadas no son cifradas.
 
-`JOURNAL_DATABASE` permite configurar una ruta diferente; por defecto se usa `instance/journal.sqlite3`. No se crea ni migra la base al arrancar Flask ni al recibir HTTP. Las conexiones ordinarias requieren que el archivo exista y que el esquema sea v2. Si falta o es v1, Accounts muestra el comando administrativo requerido. Usa `--path` en los comandos si configuraste una ruta distinta.
+`JOURNAL_DATABASE` permite configurar una ruta diferente; por defecto se usa `instance/journal.sqlite3`. No se crea ni migra la base al arrancar Flask ni al recibir HTTP. Las conexiones ordinarias requieren que el archivo exista y que el esquema sea v3. Si falta o es v1/v2, Accounts muestra el comando administrativo requerido. Usa `--path` en los comandos si configuraste una ruta distinta.
 
 Cada POST nuevo valida CSRF asociado a sesión desde campo oculto o cabecera `X-CSRF-Token`; los tokens no aparecen en URLs. La API `/api/calculate-risk` conserva su comportamiento, porque no persiste datos. Los formularios limitan su cuerpo a 16 KiB. Se distinguen validación (422), inexistentes (404), cuenta archivada/conflicto (409), CSRF (403), tamaño (413) y configuración/persistencia no disponible (503), sin mostrar detalles internos SQLite.
 
@@ -346,9 +348,9 @@ uv run --no-sync python -m database verify
 
 Estos comandos administrativos no se ejecutan automáticamente. Durante el desarrollo y las pruebas de esta fase no se migró ni modificó la base personal.
 
-`initialize()` crea v2 y verifica v2 existente; rechaza v1 sin migrarla. `verify()` verifica v2 por defecto; el verificador interno admite v1 explícitamente para respaldos/migraciones. `migrate()` admite v1→v2 o v2 sin cambios; rechaza ausencia, versión 0 y versiones desconocidas/futuras. El comando `verify` abre solo lectura.
+`initialize()` crea v3 y verifica v3 existente; rechaza versiones anteriores sin migrarlas. `verify()` verifica v3 por defecto; el verificador interno admite v1/v2 explícitamente para respaldos/migraciones. `migrate()` admite v1→v2→v3, v2→v3 o v3 sin cambios; rechaza ausencia, versión 0 y versiones desconocidas/futuras. El comando `verify` abre solo lectura.
 
-La migración obtiene una reserva `BEGIN IMMEDIATE`, valida el origen y realiza un respaldo consistente mediante la API SQLite desde una segunda conexión lectora. Se mantiene bloqueada la escritura hasta terminar, para que el respaldo corresponda al estado previo. El respaldo queda junto a la base con nombre `journal.sqlite3.<UTC>.<UUID>.bak` y permisos iniciales 0600. La CLI informa su ruta y la versión final. Repetir sobre v2 no crea otro respaldo. En caso de fallo después del respaldo, los cambios se revierten y el respaldo permanece disponible en ese directorio. Respalda también tu configuración por separado; las copias SQLite contienen datos personales. Para restaurar, detener todos los procesos y usar la copia consistente, evitando archivos WAL/SHM de otra versión. No hay restauración automática ni migración inversa.
+La migración obtiene una reserva `BEGIN IMMEDIATE`, valida el origen y realiza un respaldo consistente mediante la API SQLite desde una segunda conexión lectora. Se mantiene bloqueada la escritura hasta terminar, para que el respaldo corresponda al estado previo. El respaldo queda junto a la base con nombre `journal.sqlite3.<UTC>.<UUID>.bak` y permisos iniciales 0600. La CLI informa su ruta y la versión final. Repetir sobre v3 no crea otro respaldo. En caso de fallo después del respaldo, los cambios se revierten y el respaldo permanece disponible en ese directorio. Respalda también tu configuración por separado; las copias SQLite contienen datos personales. Para restaurar, detener todos los procesos y usar la copia consistente, evitando archivos WAL/SHM de otra versión. No hay restauración automática ni migración inversa.
 
 La versión 2 conserva las tres tablas financieras, IDs, timestamps, restricciones e índices, y añade:
 
@@ -378,7 +380,7 @@ git diff --check
 
 Las pruebas usan exclusivamente bases temporales. `tests/fixtures/schema_v1.sql` conserva el esquema original de Fase 3A, sin datos personales, para probar migraciones reales. Los tests previos de rutas ahora configuran SECRET_KEY de prueba y base temporal; los tests previos de base esperan v2 y conservan verificaciones de rechazo de versiones futuras. No se eliminaron pruebas.
 
-El diseño CSS contempla móvil y escritorio, pero las pruebas Flask no sustituyen una revisión visual/manual de navegador. La aplicación sigue siendo personal y sin autenticación; no debe exponerse públicamente como si CSRF aportara control de acceso. Siguen pendientes formularios de operaciones, historial funcional, correcciones auditables, importaciones, control de revisión en escrituras de operaciones y reglas avanzadas de cuentas fondeadas. La descripción histórica de esquema v1 anterior se conserva como referencia; v2 es la versión actual requerida.
+El diseño CSS contempla móvil y escritorio, pero las pruebas Flask no sustituyen una revisión visual/manual de navegador. La aplicación sigue siendo personal y sin autenticación; no debe exponerse públicamente como si CSRF aportara control de acceso. Siguen pendientes formularios de operaciones, historial funcional, correcciones auditables, importaciones, control de revisión en escrituras de operaciones y reglas avanzadas de cuentas fondeadas. La descripción histórica de esquema v1 anterior se conserva como referencia; v3 es la versión actual requerida.
 
 ## Fase 3B.2: registro manual inicial
 
@@ -485,7 +487,7 @@ El script usa una base temporal y una clave efímera de prueba. Comprueba la can
 
 ## Fase 3B.3 — Gestión de posiciones y detalle
 
-Después de crear una operación, el enlace **Ver operación y gestionar posición** abre `/journal/<id>`. También se puede acceder directamente por ID o desde el historial de 3B.4. El detalle muestra cuenta, instrumento, dirección, estrategia, notas, revisión, resumen financiero e historia completa en orden efectivo. Operaciones cerradas y cuentas archivadas son de solo lectura. Una operación pending admite una primera entrada válida.
+Después de crear una operación, el enlace **Ver operación y gestionar posición** abre `/journal/<id>`. También se puede acceder directamente por ID o desde el historial de 3B.4. El detalle muestra cuenta, instrumento, dirección, estrategia, notas, revisión, resumen financiero e historia completa en orden efectivo. Las cuentas archivadas son de solo lectura. Las operaciones cerradas bloquean altas normales; las correcciones especiales se incorporan en 3B.5. Una operación pending admite una primera entrada válida.
 
 La interfaz prepara una ejecución por vez: entrada adicional, salida parcial o cierre completo. El cierre completo toma la cantidad abierta mostrada, pero el servidor vuelve a validar cantidad, revisión e historia. El preview compara estado actual y proyectado; guardar exige confirmación. Se actualizan resumen e historial después del recibo confirmado. No hay cálculos financieros en JavaScript. Los importes mostrados son cadenas Decimal del servidor, sin redondeos monetarios intermedios.
 
@@ -588,3 +590,107 @@ PYTHONPATH=. WEBDRIVER_URL=http://127.0.0.1:4444 uv run --no-sync python tests/b
 ```
 
 Usa base temporal y secreto efímero. Las capturas `/tmp/history-desktop.png` y `/tmp/history-mobile.png` no forman parte del repositorio. No incluye correcciones auditables, importación, estadísticas avanzadas ni fases posteriores.
+
+## Fase 3B.5 — Correcciones auditables y anulación lógica
+
+El detalle permite **Corregir** o **Anular** una ejecución vigente, incluso cuando la operación está cerrada, si la cuenta está activa. Cada comando afecta una sola ejecución y exige motivo, preview comparativo y confirmación explícita. No existe edición masiva, restauración de anulaciones, autenticación ni importación de archivos. La auditoría no atribuye identidad verificada a una persona.
+
+### Esquema v3 y protocolo de migración
+
+`executions.is_voided` es INTEGER NOT NULL DEFAULT 0, con CHECK de tipo entero y valores 0/1. Las filas antiguas quedan vigentes; no se inventan eventos de auditoría. Precios y costos permanecen como ticks y micro-USD enteros. La tabla `execution_audit` contiene:
+
+`id, trade_id, execution_id, action, occurred_at, reason, before_json, after_json, previous_revision, new_revision, request_id, snapshot_version`.
+
+La acción es `correction` o `void`, el motivo tiene 1–2000 caracteres tras recortar espacios exteriores y el timestamp es UTC con microsegundos. La revisión nueva debe ser la anterior más uno. Una clave de solicitud identifica un evento único; una operación no puede tener dos eventos para la misma revisión. Los snapshots completos usan JSON válido, claves ordenadas, campos persistidos, enteros y null, sin floats; su versión es 1.
+
+Hay referencias a la operación y al par ejecución/operación; un índice único de identidad soporta esa relación. La referencia a `write_requests` es diferida hasta COMMIT porque el recibo se registra después del evento, dentro de la misma transacción. Índices por operación/evento y ejecución/evento sirven al historial. Los triggers `execution_audit_no_update` y `execution_audit_no_delete` rechazan modificaciones y borrados. Esto no hace el archivo resistente a manipulación por quien pueda cambiar el esquema o reemplazarlo. Escribir directamente filas financieras con SQL sigue siendo una interfaz no soportada.
+
+Las bases nuevas se crean en v3 dentro de una sola transacción. Se conserva v1→v2→v3 porque el proyecto ya soportaba v1 y sus pruebas verifican conservación y rollback; también se prueba específicamente v2→v3. Versiones futuras desconocidas se rechazan. Las conexiones web no inicializan ni migran automáticamente.
+
+Procedimiento **manual, no ejecutado sobre la base personal durante esta implementación**:
+
+1. Detener la aplicación y otros escritores, especialmente procesos con código v2.
+2. Confirmar la ruta de la base y conservar configuración/clave por separado.
+3. Ejecutar `uv run --no-sync python -m database migrate --path /ruta/explicita/journal.sqlite3`.
+4. Conservar la ruta `.bak` informada y ejecutar `uv run --no-sync python -m database verify --path /ruta/explicita/journal.sqlite3`.
+5. Reiniciar con código v3 y la configuración de la ruta y secreto apropiados.
+
+Internamente, la migración obtiene `BEGIN IMMEDIATE`, valida el origen y, **antes de cualquier DDL o cambio de datos**, usa una segunda conexión de solo lectura como fuente de SQLite Backup API. Nunca llama a `backup()` sobre la conexión que mantiene la transacción de escritura. La reserva excluye otros escritores y permite la lectura en modo rollback-journal; también se probó en WAL. El respaldo se crea junto a la base, con nombre único y permisos iniciales 0600, y se verifica con su versión fuente, `integrity_check` y `foreign_key_check` antes de cambiar el esquema.
+
+Los reintentos de Backup API están acotados a diez segundos para evitar esperas indefinidas. Un fallo de respaldo o verificación impide la migración; un fallo posterior revierte el esquema, datos y `user_version`. La copia queda disponible; una copia parcial de un respaldo fallido no debe considerarse verificada. La migración termina en `PRAGMA user_version=3` y verifica tablas, columnas, índices, triggers y claves foráneas antes de confirmar. Repetir sobre v3 verifica sin crear otro respaldo.
+
+**Recuperación:** no existe restauración automática. Detener todas las conexiones, preservar por separado el conjunto actual de base/WAL/SHM para no perder escrituras posteriores y evaluar qué se perdería al volver al respaldo. Restaurar una copia verificada en una ubicación nueva, con código compatible con su versión; no mezclar archivos WAL/SHM de la base anterior con el respaldo. SQLite Backup API incluye los datos confirmados de WAL en la copia consistente, por lo que no se adjunta un WAL antiguo al archivo restaurado. Nunca borrar WAL/SHM de una base activa. El comando `verify` de esta versión espera v3; para inspeccionar el respaldo v1/v2 se usa el verificador con `expected_version` correspondiente o la versión compatible del programa.
+
+### Servicios y endpoints
+
+Para uso Python, configurar explícitamente la clave, sin escribir su valor en código ni logs:
+
+```python
+service = TradeService(path, preview_secret=secret_from_configuration)
+preview = service.preview_execution_correction(
+    trade_id, execution_id, replacement,
+    expected_revision=revision, reason=reason,
+)
+receipt = service.correct_execution(
+    trade_id, execution_id, replacement,
+    expected_revision=revision, reason=reason,
+    request_id=request_id, preview_token=preview['preview_token'],
+)
+# Anulación: mismo contrato, sin replacement.
+preview = service.preview_execution_void(
+    trade_id, execution_id, expected_revision=revision, reason=reason,
+)
+receipt = service.void_execution(
+    trade_id, execution_id, expected_revision=revision, reason=reason,
+    request_id=request_id, preview_token=preview['preview_token'],
+)
+```
+
+Flask utiliza la `SECRET_KEY` externa existente. Si no está configurada, no se emiten previews firmados ni se confirman comandos nuevos. No se genera una clave aleatoria diferente por solicitud. Los métodos anteriores conservan sus firmas; `preview_secret` es opcional únicamente para clientes que no usan correcciones.
+
+`replacement` exige exactamente los seis campos `executed_at`, `execution_type`, `quantity`, `price`, `commission`, `fees`, usando cadenas para números y timestamp con offset. Se reutilizan los validadores de 3B.2: tick válido, cantidades positivas y hasta seis decimales en costos, rechazando exceso sin redondear. No se aceptan patches parciales, cambios sin efecto, IDs, secuencia, creación, procedencia, identificadores externos, instrumento ni dirección. Las correcciones preservan esos campos y actualizan únicamente la representación vigente. Los snapshots conservan las versiones anteriores.
+
+Todos los endpoints son POST JSON con CSRF:
+
+- `/api/journal/<trade_id>/executions/<execution_id>/correction/preview`
+- `/api/journal/<trade_id>/executions/<execution_id>/correction`
+- `/api/journal/<trade_id>/executions/<execution_id>/void/preview`
+- `/api/journal/<trade_id>/executions/<execution_id>/void`
+
+Preview recibe `expected_revision`, `reason` y, para correction, `replacement`. Confirmación añade `request_id` y `preview_token`. Se rechazan campos desconocidos. Se conserva el límite de 512 KiB y las respuestas 400/403/404/409/413/422/503. `invalid_preview` identifica firma, caducidad o vínculo inválidos; `stale_revision` exige actualizar y previsualizar nuevamente.
+
+Preview utiliza un snapshot de solo lectura y devuelve `current`, `projected`, `before`, `after`, `before_display`, `after_display`, `revision`, `current_order`, `projected_order`, `warnings`, `preview_token` y `expires_in=600`. No registra claves ni modifica filas. El recibo estable contiene `trade_id`, `execution_id`, `audit_id`, `revision`.
+
+### Firma, atomicidad e idempotencia
+
+`preview_tokens.py` usa únicamente biblioteca estándar: JSON canónico, SHA-256, HMAC-SHA256, base64url y `hmac.compare_digest`. La clave de firma se deriva con separación de dominio de la clave configurada. El token firmado contiene versión, emisión, caducidad a diez minutos y hash del comando normalizado **y** del resultado: acción, IDs, revisión, valores propuestos, motivo, snapshots, orden y proyección financiera. No se aceptan resúmenes financieros del cliente. La firma demuestra que el servidor emitió ese preview, no que una persona lo leyó.
+
+Cada escritura abre `BEGIN IMMEDIATE`: valida cuenta activa y pertenencia, resuelve idempotencia y, si es nueva, comprueba revisión, firma y caducidad, reconstruye toda la historia candidata, vuelve a ejecutar el motor y compara el vínculo firmado. Solo entonces actualiza la ejecución, inserta auditoría, incrementa revisión condicionadamente y registra el recibo. Un fallo en cualquiera de esos pasos revierte todo.
+
+El hash idempotente incluye el comando económico normalizado y el motivo; excluye el token, cuya caducidad o reemisión no cambian el comando. Un reintento confirmado devuelve exactamente el recibo previo antes de verificar revisión, token o anulación actual. No repite replay, cambios ni auditoría. Una clave con otro contenido produce 409. La cuenta debe seguir activa: si fue archivada, el reintento se bloquea hasta reactivarla. La pertenencia ejecución/operación también se comprueba antes de devolver el recibo.
+
+### Integración financiera y secuencias
+
+`_revalidate()` filtra `is_voided` antes de llamar al motor intacto. Detalle conserva todas las filas; `query_journal()` utiliza solo vigentes para fecha efectiva, cantidad de entradas, estado y estadísticas. Altas normales, lotes, reversión y sus previews mantienen el replay de vigentes, pero calculan la siguiente secuencia con **todas** las filas persistidas. Las secuencias de anuladas no se reutilizan. Corregir un timestamp mantiene la secuencia original; ante empate sigue gobernando `(UTC, sequence)`.
+
+Anular elimina también el efecto de los costos de esa ejecución. No borra sus datos ni los snapshots. Una anulación de entrada que deja salidas sin respaldo se rechaza; anular una salida parcial o final puede aumentar la posición o reabrir el trade. Anular todas mediante comandos individuales válidos devuelve pending, posición y neto cero; Journal usa creación e indica que no hay ejecuciones vigentes. No se permite corregir ni anular nuevamente una fila anulada, excepto devolver el recibo de su comando ya confirmado. No hay restauración.
+
+Ejemplo probado en Firefox: MNQ Long, entrada 2 @ 20000 con comisión 2.50 y salida 2 @ 20010: bruto 40 y neto 37.50. Corregir entrada a 20001 produce bruto 36 y neto 33.50. Anular la salida reabre con dos contratos y neto −2.50; anular después la entrada devuelve pending y neto cero. Los tres comandos producen tres eventos, no más, aun perdiendo una respuesta después del commit.
+
+La interfaz conserva borradores y descarta respuestas tardías. Editar valores o motivo invalida la confirmación. Durante una escritura incierta bloquea cambios/cancelación y conserva exactamente payload y request_id para reintentar. Un conflicto de revisión exige actualización explícita, otro preview y nueva confirmación. Las altas normales se bloquean mientras se prepara una corrección, sin borrar su borrador. Los borradores y claves siguen en memoria: recargar puede perderlos; `beforeunload` no garantiza recuperación. Cuentas archivadas no permiten ninguna escritura; operaciones cerradas solo permiten los comandos especiales.
+
+### Validación y límites
+
+Las pruebas nuevas están en `test_execution_corrections.py`, `test_correction_routes.py` y `test_migrations_v3.py`. Las pruebas previas `test_database.py` y `test_migrations.py` cambian exclusivamente expectativas de versión y la columna nueva con valor cero; conservan comprobaciones de filas, IDs, respaldo y rollback. El fixture v1 sigue intacto. Todo se ejecuta sobre bases temporales.
+
+```bash
+uv run --no-sync python -W error::ResourceWarning -m unittest discover -s tests -v
+node --check static/journal_detail.js
+node --check static/execution_amendments.js
+git diff --check
+PYTHONPATH=. WEBDRIVER_URL=http://127.0.0.1:4444 uv run --no-sync python tests/browser_execution_corrections_validation.py
+```
+
+Firefox usa un servidor WebDriver existente, SQLite temporal y secreto efímero. Las capturas `/tmp/corrections-*.png` quedan fuera del repositorio. Se prueban corrección cerrada, errores, conflicto concurrente, respuesta tardía, pérdida de respuesta con recibo idéntico, reapertura, pending y archivo. No se instalan dependencias ni se migra la base personal.
+
+Límites: auditoría de ejecuciones únicamente, sin identidad autenticada ni resistencia contra un administrador del archivo; no se auditan todos los cambios de metadatos o cuentas. Snapshot y auditoría completos pueden crecer en costo con historias extensas. El reloj del servidor gobierna la caducidad; rotar la clave invalida previews nuevos pendientes, pero los reintentos ya confirmados siguen resolviéndose por idempotencia. El catálogo continúa siendo fuente única y modificarlo retroactivamente puede alterar resultados; no se versionan multiplicadores en esta fase.

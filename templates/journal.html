@@ -25,7 +25,7 @@
 {% if result.pagination.adjusted %}<p role="status">Página solicitada fuera de rango. Se muestra la página {{ result.pagination.page }}.</p>{% endif %}
 {% if result['items'] %}<table class="history-table"><thead><tr>{% for label in ['Fecha efectiva','Cuenta','Instrumento','Dirección','Estrategia','Estado','Contratos de entrada','Abiertos','Neto realizado USD','Detalle'] %}<th scope="col">{{ label }}</th>{% endfor %}</tr></thead><tbody>
 {% for item in result['items'] %}<tr data-trade-id="{{ item.id }}">
-<td data-label="Fecha efectiva">{{ item.effective_local }}{% if item.date_is_creation %}<br>Fecha de creación{% endif %}</td>
+<td data-label="Fecha efectiva">{{ item.effective_local }}{% if item.date_is_creation %}<br>Fecha de creación · Sin ejecuciones vigentes{% endif %}</td>
 <td data-label="Cuenta">{{ item.account.name }} · #{{ item.account.id }}{% if not item.account.is_active %}<br><strong>Archivada</strong>{% endif %}</td>
 <td data-label="Instrumento">{{ item.symbol }}</td><td data-label="Dirección">{{ item.direction|capitalize }}</td><td data-label="Estrategia">{{ item.strategy or '—' }}</td><td data-label="Estado">{{ item.summary.status }}</td><td data-label="Contratos de entrada">{{ item.entry_quantity }}</td><td data-label="Abiertos">{{ item.summary.open_quantity }}</td>
 <td data-label="Neto realizado USD">{{ '{:+,.2f}'.format(item.summary.net_pnl) }}<br>{{ 'Positivo' if item.summary.net_pnl>0 else ('Negativo' if item.summary.net_pnl<0 else 'Cero') }}</td><td data-label="Detalle"><a href="{{ url_for('journal_detail',trade_id=item.id) }}">Ver #{{ item.id }}</a></td></tr>{% endfor %}

@@ -5,11 +5,12 @@ from pathlib import Path
 import sqlite3
 from datetime import datetime, timezone
 from uuid import uuid4
+from time import monotonic
 
 from contracts import CONTRACTS
 
 DEFAULT_PATH = Path(__file__).resolve().parent / 'instance' / 'journal.sqlite3'
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 class DatabaseError(RuntimeError):
@@ -53,7 +54,7 @@ def initialize(path=DEFAULT_PATH):
                 verify(connection)
                 return
             if version != 0:
-                raise DatabaseError(f'Versión {version}: utiliza el comando migrate para una base v1; no se admiten versiones futuras.')
+                raise DatabaseError(f'Versión {version}: utiliza el comando migrate para una base v1/v2; no se admiten versiones futuras.')
             if connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchone():
                 raise DatabaseError('Base sin versión pero con tablas: requiere migración explícita.')
             suffix = ' STRICT' if sqlite3.sqlite_version_info >= (3, 37, 0) else ''
@@ -108,6 +109,7 @@ def initialize(path=DEFAULT_PATH):
             ):
                 connection.execute(statement)
             _upgrade_v1(connection)
+            _upgrade_v2(connection)
             connection.execute(f'PRAGMA user_version = {SCHEMA_VERSION}')
             verify(connection)
     finally:
@@ -127,9 +129,20 @@ def verify(connection, *, expected_version=SCHEMA_VERSION):
                        'quantity', 'price_ticks', 'commission_microusd', 'fees_microusd', 'source',
                        'external_execution_id', 'external_namespace', 'created_at'},
     }
-    if expected_version == 2:
+    if expected_version >= 2:
         expected['trades'].add('revision')
         expected['write_requests'] = {'request_key', 'action', 'payload_hash', 'result_json', 'created_at'}
+    if expected_version >= 3:
+        expected['executions'].add('is_voided')
+        expected['execution_audit'] = {'id','trade_id','execution_id','action','occurred_at','reason',
+                                       'before_json','after_json','previous_revision','new_revision','request_id','snapshot_version'}
+        required_objects = {'executions_identity','execution_audit_trade','execution_audit_execution',
+                            'execution_audit_no_update','execution_audit_no_delete'}
+        objects = {r[0] for r in connection.execute("SELECT name FROM sqlite_master WHERE type IN ('index','trigger')")}
+        if not required_objects <= objects:
+            raise DatabaseError('Faltan índices o triggers de auditoría.')
+        if not list(connection.execute('PRAGMA foreign_key_list(execution_audit)')):
+            raise DatabaseError('Faltan claves foráneas de auditoría.')
     for table, columns in expected.items():
         actual = {row[1] for row in connection.execute(f'PRAGMA table_info({table})')}
         if not columns <= actual:
@@ -158,6 +171,57 @@ def _upgrade_v1(connection):
     connection.execute('CREATE INDEX write_requests_created ON write_requests(created_at)')
 
 
+def _upgrade_v2(connection):
+    connection.execute("ALTER TABLE executions ADD COLUMN is_voided INTEGER NOT NULL DEFAULT 0 CHECK(typeof(is_voided)='integer' AND is_voided IN (0,1))")
+    connection.execute('CREATE UNIQUE INDEX executions_identity ON executions(id,trade_id)')
+    suffix = ' STRICT' if sqlite3.sqlite_version_info >= (3, 37, 0) else ''
+    connection.execute("""CREATE TABLE execution_audit (
+        id INTEGER PRIMARY KEY,
+        trade_id INTEGER NOT NULL REFERENCES trades(id) ON DELETE RESTRICT,
+        execution_id INTEGER NOT NULL,
+        action TEXT NOT NULL CHECK(action IN ('correction','void')),
+        occurred_at TEXT NOT NULL CHECK(length(occurred_at)=27 AND substr(occurred_at,-1)='Z'),
+        reason TEXT NOT NULL CHECK(length(trim(reason)) BETWEEN 1 AND 2000),
+        before_json TEXT NOT NULL CHECK(json_valid(before_json)),
+        after_json TEXT NOT NULL CHECK(json_valid(after_json)),
+        previous_revision INTEGER NOT NULL CHECK(typeof(previous_revision)='integer' AND previous_revision>=0),
+        new_revision INTEGER NOT NULL CHECK(typeof(new_revision)='integer' AND new_revision=previous_revision+1),
+        request_id TEXT NOT NULL UNIQUE REFERENCES write_requests(request_key) ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+        snapshot_version INTEGER NOT NULL CHECK(snapshot_version=1),
+        FOREIGN KEY(execution_id,trade_id) REFERENCES executions(id,trade_id) ON DELETE RESTRICT,
+        UNIQUE(trade_id,new_revision)
+    )""" + suffix)
+    connection.execute('CREATE INDEX execution_audit_trade ON execution_audit(trade_id,id)')
+    connection.execute('CREATE INDEX execution_audit_execution ON execution_audit(execution_id,id)')
+    for action in ('UPDATE','DELETE'):
+        connection.execute(f"CREATE TRIGGER execution_audit_no_{action.lower()} BEFORE {action} ON execution_audit BEGIN SELECT RAISE(ABORT,'Audit is append-only'); END")
+
+
+def _backup_verified(path, backup_path, version):
+    """Caller holds a RESERVED writer lock, with no schema/data changes yet.
+
+    Backup reads through a DIFFERENT, read-only connection. Never call backup
+    on the connection holding BEGIN IMMEDIATE (it can wait on its own write).
+    RESERVED permits readers in rollback mode and excludes writers in WAL too.
+    Bound retries so a locking failure cannot leave migration waiting forever.
+    """
+    deadline = monotonic() + 10
+    def progress(status, remaining, total):
+        if monotonic() > deadline:
+            raise DatabaseError('Tiempo agotado al respaldar; no se aplicó la migración.')
+    source = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=5)
+    target = None
+    try:
+        backup_path.touch(mode=0o600, exist_ok=False)
+        target = sqlite3.connect(str(backup_path))
+        source.backup(target, pages=128, progress=progress, sleep=0.05)
+        verify(target, expected_version=version)
+    finally:
+        source.close()
+        if target is not None:
+            target.close()
+
+
 def migrate(path=DEFAULT_PATH):
     """Reserva la escritura antes del respaldo para mantener la misma versión fuente."""
     path = Path(path).resolve()
@@ -166,26 +230,17 @@ def migrate(path=DEFAULT_PATH):
     try:
         with transaction(connection):
             version = connection.execute('PRAGMA user_version').fetchone()[0]
-            if version not in (1, 2):
+            if version not in (1, 2, 3):
                 raise DatabaseError(f'Versión no soportada: {version}.')
             verify(connection, expected_version=version)
-            if version == 2:
+            if version == SCHEMA_VERSION:
                 return None
             backup_path = path.with_name(path.name + '.' + datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S') + '.' + uuid4().hex + '.bak')
-            # Una conexión lectora separada permite backup con la reserva de escritura vigente.
-            source = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)
-            target = None
-            try:
-                backup_path.touch(mode=0o600, exist_ok=False)
-                target = sqlite3.connect(str(backup_path))
-                source.backup(target)
-                verify(target, expected_version=1)
-            finally:
-                source.close()
-                if target is not None:
-                    target.close()
-            _upgrade_v1(connection)
-            connection.execute('PRAGMA user_version=2')
+            _backup_verified(path, backup_path, version)
+            if version == 1:
+                _upgrade_v1(connection)
+            _upgrade_v2(connection)
+            connection.execute('PRAGMA user_version=3')
             verify(connection)
         return backup_path
     finally:
@@ -203,7 +258,7 @@ def main():
             initialize(args.path)
         elif args.command == 'migrate':
             backup = migrate(args.path)
-            print(f'Respaldo: {backup}' if backup else 'Ya está en v2; sin respaldo adicional.')
+            print(f'Respaldo: {backup}' if backup else 'Ya está en v3; sin respaldo adicional.')
         else:
             connection = sqlite3.connect(args.path.resolve().as_uri() + '?mode=ro', uri=True)
             try:

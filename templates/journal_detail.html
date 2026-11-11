@@ -20,18 +20,18 @@
         {% endfor %}
     </dl>
     <p class="ayuda">El neto descuenta los costos incurridos. Con contratos abiertos no es el resultado final. No se calcula P&amp;L no realizado.</p>
-    <p id="detail-readonly" class="advertencia" {% if trade.account.is_active and trade.summary.status != 'closed' %}hidden{% endif %}>Solo lectura: operación cerrada o cuenta archivada.</p>
+    <p id="detail-readonly" class="advertencia" {% if trade.account.is_active and trade.summary.status != 'closed' %}hidden{% endif %}>Solo lectura para altas normales: operación cerrada o cuenta archivada. Las correcciones especiales requieren una cuenta activa.</p>
     <button type="button" id="refresh-position">Actualizar posición</button>
 </section>
 <section class="dashboard account-panel" aria-labelledby="history-title">
     <h2 id="history-title">Historial completo · UTC</h2>
     <div class="execution-table-wrap"><table class="detail-history">
-        <thead><tr><th>Secuencia</th><th>Fecha UTC</th><th>Tipo</th><th>Contratos</th><th>Precio</th><th>Comisión USD</th><th>Cargos USD</th></tr></thead>
+        <thead><tr><th>Secuencia</th><th>Fecha UTC</th><th>Tipo</th><th>Contratos</th><th>Precio</th><th>Comisión USD</th><th>Cargos USD</th><th>Vigencia / acciones</th></tr></thead>
         <tbody id="detail-history">
-        {% for row in trade.executions %}<tr>{% for key in ['sequence','executed_at','execution_type','quantity','price','commission','fees'] %}<td>{{ row[key] }}</td>{% endfor %}</tr>{% endfor %}
+        {% for row in trade.executions %}<tr>{% for key in ['sequence','executed_at','execution_type','quantity','price','commission','fees'] %}<td>{{ row[key] }}</td>{% endfor %}<td>{{ 'Anulada' if row.is_voided else 'Vigente' }}</td></tr>{% endfor %}
         </tbody>
     </table></div>
-    <p id="history-empty" {% if trade.executions %}hidden{% endif %}>Sin ejecuciones; operación pending.</p>
+    <p id="history-empty" {% if trade.executions %}hidden{% endif %}>Sin ejecuciones vigentes; operación pending.</p>
 </section>
 <p id="execution-message" role="status" aria-live="polite"></p>
 <div id="execution-errors" role="alert" class="advertencia"></div>
@@ -66,7 +66,46 @@
         <button type="button" id="save-execution" disabled>Confirmar ejecución</button>
     </section>
 </form>
+<section id="audit-panel" class="dashboard account-panel">
+    <h2>Auditoría de ejecuciones</h2>
+    <p class="ayuda">Eventos locales de corrección y anulación. No hay identidad de usuario verificada.</p>
+    <div id="audit-history">
+    {% for event in trade.audit %}<details><summary>#{{ event.id }} · {{ event.action }} · Ejecución #{{ event.execution_id }} · {{ event.occurred_at }}</summary>
+    <p>{{ event.reason }} · Revisión {{ event.previous_revision }} → {{ event.new_revision }}</p>
+    <p>Solicitud: {{ event.request_id }}</p><pre>Antes: {{ event.before|tojson(indent=2) }}
+Después: {{ event.after|tojson(indent=2) }}</pre></details>{% else %}<p>Sin correcciones ni anulaciones registradas.</p>{% endfor %}
+    </div>
+</section>
+<form id="amendment-form" class="dashboard account-panel" hidden data-base="{{ url_for('execution_create',trade_id=trade.id) }}">
+    <h2 id="amendment-title">Corregir ejecución</h2>
+    <p>Se revalidará toda la operación. No se modifica la secuencia original. Las anulaciones no se pueden restaurar.</p>
+    <fieldset id="amendment-fields">
+        <div id="amendment-values" class="campos">
+            <label>Fecha y hora ISO con offset explícito <input name="executed_at" maxlength="40" required placeholder="2026-11-10T10:00:00-04:00"></label>
+            <label>Tipo <select name="execution_type"><option value="entry">Entrada</option><option value="exit">Salida</option></select></label>
+            <label>Contratos <input name="quantity" type="number" min="1" step="1" required></label>
+            <label>Precio <input name="price" type="number" min="{{ tick }}" step="{{ tick }}" required></label>
+            <label>Comisión total USD <input name="commission" type="number" min="0" step="0.000001" required></label>
+            <label>Cargos totales USD <input name="fees" type="number" min="0" step="0.000001" required></label>
+        </div>
+        <label>Motivo obligatorio <textarea name="reason" maxlength="2000" required></textarea></label>
+        <button id="preview-amendment" type="submit">Previsualizar cambio</button>
+    </fieldset>
+    <p id="amendment-message" role="status" aria-live="polite"></p>
+    <div id="amendment-errors" class="advertencia" role="alert"></div>
+    <section id="amendment-preview" hidden>
+        <h3>Comparación financiera</h3>
+        <div class="execution-table-wrap"><table class="detail-history"><thead><tr><th>Indicador</th><th>Actual</th><th>Proyectado</th></tr></thead><tbody id="amendment-summary"></tbody></table></div>
+        <h3>Ejecución anterior y propuesta</h3><div id="amendment-changes"></div>
+        <p id="amendment-order"></p><div id="amendment-warnings" class="advertencia"></div>
+        <label><input type="checkbox" id="confirm-amendment"> Confirmo el motivo, los cambios y su impacto financiero.</label>
+        <button id="save-amendment" type="button" disabled>Confirmar cambio auditable</button>
+    </section>
+    <button id="refresh-amendment" type="button">Actualizar posición y conservar borrador</button>
+    <button id="cancel-amendment" type="button">Cancelar</button>
+</form>
 <script id="trade-snapshot" type="application/json">{{ trade|tojson }}</script>
 <script src="{{ url_for('static', filename='journal_detail.js') }}" defer></script>
+<script src="{{ url_for('static', filename='execution_amendments.js') }}" defer></script>
 {% endif %}
 {% endblock %}
