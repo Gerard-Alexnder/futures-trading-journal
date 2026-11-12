@@ -49,10 +49,29 @@ Requisitos: UV instalado y Python 3.14 disponible. Desde la carpeta del proyecto
 
 ```bash
 uv sync --locked
+set -a
+source .env.local
+set +a
 uv run python app.py
 ```
 
 UV utiliza el entorno `.venv` del proyecto; no necesitas activarlo manualmente ni usar pip. `uv sync --locked` instala las dependencias respetando `uv.lock`.
+
+En la terminal Bash de VS Code, ejecuta estos comandos desde la raíz del proyecto. `.env.local` es privado, está ignorado por Git y conserva la misma clave entre arranques. Cárgalo en cada terminal nueva antes de iniciar Flask. No lo publiques ni lo imprimas. `source` ejecuta instrucciones de shell: úsalo únicamente con tu archivo local revisado y de confianza.
+
+Si todavía no existe `.env.local`, créalo una sola vez con este comando, que genera 32 bytes aleatorios sin mostrar la clave y aplica permisos `0600` en sistemas POSIX. El modo `x` impide sobrescribir un archivo existente:
+
+```bash
+uv run --no-sync python - <<'PY'
+import os
+import secrets
+
+with open('.env.local', 'x', opener=lambda path, flags: os.open(path, flags, 0o600)) as private_file:
+    private_file.write('SECRET_KEY=' + secrets.token_hex(32) + '\n')
+PY
+```
+
+`.env.example` documenta las variables con una clave de ejemplo que debes reemplazar; no lo cargues como configuración real. No se requiere `python-dotenv`. Si omites `JOURNAL_DATABASE` en `.env.local`, se utiliza la ruta predeterminada de la base.
 
 Abre <http://127.0.0.1:5000/>. Detén el servidor con `Ctrl+C`.
 
@@ -322,7 +341,7 @@ Accounts ahora permite crear, listar, seleccionar, archivar y reactivar cuentas.
 
 ### Configuración web
 
-Define `SECRET_KEY` mediante una variable de entorno o el gestor de secretos del despliegue. Utiliza un valor aleatorio persistente de al menos 32 bytes. Puedes generar uno localmente con `uv run --no-sync python -c 'import secrets; print(secrets.token_hex(32))'` y guardarlo de forma privada; no lo publiques ni lo añadas a Git. No hay carga automática de `.env` ni claves predeterminadas o efímeras. Cambiar la clave invalida las sesiones anteriores.
+Define `SECRET_KEY` mediante una variable de entorno o el gestor de secretos del despliegue. Utiliza un valor aleatorio persistente de al menos 32 bytes. Para desarrollo local, sigue las instrucciones de `.env.local` en «Ejecutar localmente»: generan la clave sin mostrarla y la exportan antes de arrancar Flask. No hay carga automática de `.env` ni claves predeterminadas o efímeras. Cambiar la clave invalida las sesiones anteriores.
 
 Sin `SECRET_KEY`, Accounts responde 503 con instrucciones; las páginas existentes y la calculadora siguen disponibles. Las cookies de sesión tienen `HttpOnly` y `SameSite=Lax`. Define `SESSION_COOKIE_SECURE=true` para HTTPS (en HTTP local debe permanecer desactivado). No se establece duración permanente: la cookie dura la sesión del navegador, sujeta a la restauración de sesiones propia del navegador. La sesión contiene token CSRF, ID de cuenta seleccionada y mensajes de interfaz; no importes financieros. Las cookies firmadas no son cifradas.
 
